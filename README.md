@@ -26,7 +26,7 @@ intentionally placeholders for now.
 Live version: not deployed yet - see [`PUBLISHING.md`](./PUBLISHING.md) for
 the steps to put this on GitHub Pages.
 
-## Running it locally
+## Running it locally 
 
 ```sh
 npm install
