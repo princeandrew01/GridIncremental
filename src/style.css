@@ -11,6 +11,7 @@
   --leech-color: #b53a3a;
   --buff-color: #b5943a;
   --buffv2-color: #8a6a2a; /* darker gold - visually distinct from Buff V1 on the board */
+  --powercore-color: #3a7f9f; /* teal-blue - a resource, not a generator/buffer, so deliberately outside the green/red/gold family */
   /* Shared between each cell-<type>'s background, its own border (so the
      grey/white grid border doesn't cut across a generator cell), and - for
      buffV1 - the facing-arrow tab, so they're all pixel-identical. */
@@ -18,6 +19,7 @@
   --leech-cell-bg: color-mix(in srgb, canvas, var(--leech-color) 35%);
   --buff-cell-bg: color-mix(in srgb, canvas, var(--buff-color) 35%);
   --buffv2-cell-bg: color-mix(in srgb, canvas, var(--buffv2-color) 35%);
+  --powercore-cell-bg: color-mix(in srgb, canvas, var(--powercore-color) 35%);
 }
 
 * {
@@ -132,23 +134,51 @@ body {
   margin: 0 0 0.6rem;
 }
 
+/* <details>/<summary> per version - collapsible so skimming past an older
+   version doesn't mean scrolling past its whole change list too. Only the
+   most recent version opens by default (see devLogPanel.ts). */
 .devlog-entry {
-  margin-bottom: 0.9rem;
+  margin-bottom: 0.7rem;
+  padding-bottom: 0.7rem;
+  border-bottom: 1px solid #8886;
 }
 
-.devlog-entry h3 {
+.devlog-entry:last-of-type {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.devlog-entry-summary {
+  cursor: pointer;
+  list-style-position: outside;
+}
+
+.devlog-entry-summary:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+}
+
+.devlog-entry-summary::marker,
+.devlog-entry-summary::-webkit-details-marker {
+  color: #8888;
+}
+
+.devlog-version {
+  display: block;
   font-size: 0.85rem;
-  margin: 0 0 0.2rem;
+  font-weight: 600;
 }
 
 .devlog-summary {
+  display: block;
   font-size: 0.8rem;
   opacity: 0.75;
-  margin: 0 0 0.35rem;
+  margin-top: 0.15rem;
 }
 
 .devlog-changes {
-  margin: 0;
+  margin: 0.5rem 0 0;
   padding-left: 1.1rem;
   font-size: 0.78rem;
   display: flex;
@@ -246,6 +276,11 @@ body {
 .cell-buffV2 {
   background: var(--buffv2-cell-bg);
   border-color: var(--buffv2-cell-bg);
+}
+
+.cell-powerCoreGenerator {
+  background: var(--powercore-cell-bg);
+  border-color: var(--powercore-cell-bg);
 }
 
 .cell-selected {
@@ -399,6 +434,12 @@ body {
   opacity: 0.85;
 }
 
+.panel-power-cores {
+  font-size: 0.95rem;
+  opacity: 0.85;
+  color: var(--powercore-color);
+}
+
 .panel-section h2 {
   font-size: 0.9rem;
   text-transform: uppercase;
@@ -437,6 +478,16 @@ body {
   color: canvastext;
   font: inherit;
   cursor: pointer;
+}
+
+/* Author stylesheets override the UA's default `[hidden] { display: none }`
+   once .build-button sets its own `display: flex` above, so it has to be
+   restored explicitly - same gotcha as .settings-popover[hidden] below.
+   Without this, the Power Core Generator button stayed visible and
+   clickable even before unlockPowerCoreGenerator was bought - the `hidden`
+   attribute set in panel.ts was silently a no-op. */
+.build-button[hidden] {
+  display: none;
 }
 
 /* Icon reuses the same cell-<type> background classes as the grid, so the
@@ -527,6 +578,12 @@ body {
   font-size: 0.9rem;
 }
 
+.panel-type-desc {
+  font-size: 0.8rem;
+  opacity: 0.75;
+  margin-bottom: 0.2rem;
+}
+
 .panel-next-level {
   margin-top: 0.4rem;
   padding-top: 0.4rem;
@@ -584,6 +641,10 @@ body {
   min-height: 12rem; /* comfortable floor for short content (e.g. Build tab with nothing selected) */
   flex: 1 1 auto;
   overflow-y: auto; /* the actual scroll region - see .panel-bordered's max-height and .tab-shell's min-height: 0 */
+  /* Without this, a visible scrollbar sits flush against the text with no
+     breathing room, visually covering the last few characters of anything
+     right-aligned (e.g. upgrade costs). */
+  padding-right: 0.75rem;
 }
 
 .placeholder-text {

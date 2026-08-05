@@ -2,7 +2,7 @@ import type { GameState, TickResult } from '../game/types'
 import { format } from '../game/format'
 import type { NumberFormatMode } from '../game/format'
 import { countOfType } from '../game/economy'
-import { critChanceFor, critAmountFor } from '../game/upgrades'
+import { critChanceFor, critAmountFor, powerCoreChanceFor, powerCoreAmountFor, refundFraction } from '../game/upgrades'
 import { formatDuration } from './formatDuration'
 
 export interface StatsPanelHandle {
@@ -41,8 +41,14 @@ export function createStatsPanel(container: HTMLElement): StatsPanelHandle {
     generatorsOnBoard: makeRow(rows, 'Generators on board'),
     generatorsBuiltAllTime: makeRow(rows, 'Generators built (all-time)'),
     totalUpgrades: makeRow(rows, 'Times leveled (all-time)'),
-    currencyCurrent: makeRow(rows, 'Currency (current)'),
-    currencyLifetime: makeRow(rows, 'Currency (lifetime earned)'),
+    currencyCurrent: makeRow(rows, 'Energy (current)'),
+    currencyLifetime: makeRow(rows, 'Energy (lifetime earned)'),
+    currentRunEnergy: makeRow(rows, 'Energy earned (current run)'),
+    bestRunEnergy: makeRow(rows, 'Energy earned (best run)'),
+    powerCores: makeRow(rows, 'Power cores'),
+    powerCoreChance: makeRow(rows, 'Power core chance'),
+    powerCoreAmount: makeRow(rows, 'Power core amount (per proc)'),
+    removalRefundPct: makeRow(rows, 'Removal refund (cost to sell)'),
     highestBasic: makeRow(rows, 'Highest Basic value'),
     highestLeech: makeRow(rows, 'Highest Leech value'),
     highestBuffLevel: makeRow(rows, 'Highest Buff level'),
@@ -74,6 +80,13 @@ export function createStatsPanel(container: HTMLElement): StatsPanelHandle {
 
     v.currencyCurrent.textContent = format(state.currency, formatMode)
     v.currencyLifetime.textContent = format(state.lifetimeCurrencyEarned, formatMode)
+    v.currentRunEnergy.textContent = format(state.currentRunEnergyEarned, formatMode)
+    v.bestRunEnergy.textContent = format(state.bestRunEnergyEarned, formatMode)
+
+    v.powerCores.textContent = format(state.powerCores, formatMode)
+    v.powerCoreChance.textContent = `${(powerCoreChanceFor(state) * 100).toFixed(1)}%`
+    v.powerCoreAmount.textContent = String(powerCoreAmountFor(state))
+    v.removalRefundPct.textContent = `${(refundFraction(state) * 100).toFixed(0)}%`
 
     v.highestBasic.textContent = format(state.highestValue.basic, formatMode)
     v.highestLeech.textContent = format(state.highestValue.leech, formatMode)

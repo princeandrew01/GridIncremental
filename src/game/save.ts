@@ -1,12 +1,12 @@
 import Decimal from 'break_infinity.js'
-import type { Cell, CellType, Facing, GameState, UpgradeLevels } from './types'
-import { makeEmptyUpgradeLevels } from './types'
+import type { Cell, CellType, Facing, GameState, UpgradeLevels, PowerCoreUpgradeLevels } from './types'
+import { makeEmptyUpgradeLevels, makeEmptyPowerCoreUpgradeLevels } from './types'
 import { MAX_LEVEL } from './config'
 
-export const SAVE_VERSION = 5
+export const SAVE_VERSION = 6
 
-const TYPE_TO_INDEX: Record<CellType, number> = { empty: 0, basic: 1, leech: 2, buffV1: 3, buffV2: 4 }
-const INDEX_TO_TYPE: CellType[] = ['empty', 'basic', 'leech', 'buffV1', 'buffV2']
+const TYPE_TO_INDEX: Record<CellType, number> = { empty: 0, basic: 1, leech: 2, buffV1: 3, buffV2: 4, powerCoreGenerator: 5 }
+const INDEX_TO_TYPE: CellType[] = ['empty', 'basic', 'leech', 'buffV1', 'buffV2', 'powerCoreGenerator']
 
 interface SaveCell {
   t: number // type index
@@ -14,6 +14,7 @@ interface SaveCell {
   b: string // buffAccum, Decimal serialised as string
   f: Facing // facing; meaningless except on buffV1, but always present - cheap and keeps the shape uniform
   p: string // placementCost, Decimal serialised as string - added in version 3, see migrate() below
+  cp: number // coreProgress; meaningless except on powerCoreGenerator - added in version 6, see migrate() below
 }
 
 export interface SaveData {
@@ -40,6 +41,14 @@ export interface SaveData {
   // Added in version 4, alongside the Upgrades tab and the buff v1/v2 split -
   // see GameState. migrate() below backfills these for older saves.
   upgrades: UpgradeLevels
+
+  // Added in version 6, alongside Power Cores - see GameState. migrate()
+  // below backfills these for older saves.
+  powerCores: string
+  powerCoreUpgrades: PowerCoreUpgradeLevels
+  currentRunEnergyEarned: string
+  bestRunEnergyEarned: string
+  powerCoreExponentsAwarded: number
 }
 
 /** Pure: GameState -> SaveData. Never touches storage. */
@@ -54,6 +63,7 @@ export function serialize(state: GameState): SaveData {
       b: cell.buffAccum.toString(),
       f: cell.facing,
       p: cell.placementCost.toString(),
+      cp: cell.coreProgress,
     })),
     currency: state.currency.toString(),
     tickCount: state.tickCount,
@@ -68,6 +78,11 @@ export function serialize(state: GameState): SaveData {
     highestBuffLevel: state.highestBuffLevel,
     unlockedAchievements: state.unlockedAchievements,
     upgrades: { ...state.upgrades },
+    powerCores: state.powerCores.toString(),
+    powerCoreUpgrades: { ...state.powerCoreUpgrades },
+    currentRunEnergyEarned: state.currentRunEnergyEarned.toString(),
+    bestRunEnergyEarned: state.bestRunEnergyEarned.toString(),
+    powerCoreExponentsAwarded: state.powerCoreExponentsAwarded,
   }
 }
 
@@ -148,6 +163,30 @@ export function migrate(save: SaveData): SaveData {
       upgrades: { ...makeEmptyUpgradeLevels(), ...save.upgrades },
     }
   }
+  if (save.version < 6) {
+    // v5 predates Power Cores entirely - no power-core fields exist at all,
+    // and cells have no `cp` (coreProgress). A fresh start on all of it: 0
+    // power cores, every power-core upgrade at level 0 (including
+    // unlockPowerCoreGenerator, so the Power Core Generator stays
+    // unavailable until bought for real), no energy threshold crossed yet.
+    // currentRunEnergyEarned backfills from lifetimeCurrencyEarned - the
+    // same "best available guess" approach the v1->v2 stats backfill used -
+    // rather than 0, so a long-running save doesn't have to re-earn energy
+    // it's already past just to catch up on power core awards; this may
+    // retroactively grant power cores for thresholds already crossed, which
+    // is the generous direction to err in given the alternative is
+    // recoverable history being discarded.
+    save = {
+      ...save,
+      version: 6,
+      cells: save.cells.map((c) => ({ ...c, cp: c.cp ?? 0 })),
+      powerCores: '0',
+      powerCoreUpgrades: makeEmptyPowerCoreUpgradeLevels(),
+      currentRunEnergyEarned: save.lifetimeCurrencyEarned,
+      bestRunEnergyEarned: save.lifetimeCurrencyEarned,
+      powerCoreExponentsAwarded: 0,
+    }
+  }
   return save
 }
 
@@ -160,6 +199,7 @@ export function deserialize(rawSave: SaveData): GameState {
     buffAccum: new Decimal(c.b),
     facing: c.f ?? 'up',
     placementCost: new Decimal(c.p ?? '0'),
+    coreProgress: c.cp ?? 0,
   }))
   return {
     version: save.version,
@@ -170,6 +210,11 @@ export function deserialize(rawSave: SaveData): GameState {
     tickCount: save.tickCount,
     lastSaved: save.lastSaved,
     upgrades: save.upgrades ?? makeEmptyUpgradeLevels(),
+    powerCores: new Decimal(save.powerCores ?? '0'),
+    powerCoreUpgrades: save.powerCoreUpgrades ?? makeEmptyPowerCoreUpgradeLevels(),
+    currentRunEnergyEarned: new Decimal(save.currentRunEnergyEarned ?? '0'),
+    bestRunEnergyEarned: new Decimal(save.bestRunEnergyEarned ?? '0'),
+    powerCoreExponentsAwarded: save.powerCoreExponentsAwarded ?? 0,
     startedAt: save.startedAt,
     prestigeStartedAt: save.prestigeStartedAt,
     activePlayMs: save.activePlayMs,

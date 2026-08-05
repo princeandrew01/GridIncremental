@@ -47,18 +47,20 @@ function formatSuffix(n: Decimal): string {
  * Below 1,000: as-is, no decimals (rounded, not floored - flooring made
  * small level-up bumps like 1 -> 1.5 display as no visible change at all,
  * which read as a bug).
- * 1,000 to 1e6: thousands separators for scientific/engineering; suffix mode
- * switches straight to K/M notation at 1,000 instead - its own convention.
- * Above 1e6 (and above 1,000 for suffix mode): per `mode`.
+ * `engineering` keeps its own convention: thousands separators from 1,000 to
+ * 1e6, mod-3-exponent scientific notation above that.
+ * `scientific` and `suffix` deliberately produce IDENTICAL output (confirmed
+ * with the user): K/M/B/T from 1,000 straight through a trillion, then
+ * regular scientific notation past that - see formatSuffix.
  */
 export function format(n: Decimal, mode: NumberFormatMode): string {
   if (n.lt(0)) return '-' + format(n.neg(), mode)
 
-  if (mode === 'suffix') {
-    return n.lt(1000) ? formatPlain(n) : formatSuffix(n)
+  if (mode === 'engineering') {
+    if (n.lt(1000)) return formatPlain(n)
+    if (n.lt(1e6)) return formatGrouped(n)
+    return formatEngineering(n)
   }
 
-  if (n.lt(1000)) return formatPlain(n)
-  if (n.lt(1e6)) return formatGrouped(n)
-  return mode === 'engineering' ? formatEngineering(n) : formatScientific(n)
+  return n.lt(1000) ? formatPlain(n) : formatSuffix(n)
 }

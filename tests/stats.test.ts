@@ -29,6 +29,9 @@ describe('updateHighestValues', () => {
       final: state.cells.map(() => new Decimal(0)),
       production: new Decimal(0),
       crits: state.cells.map(() => false),
+      basePowerCores: state.cells.map(() => new Decimal(0)),
+      finalPowerCores: state.cells.map(() => new Decimal(0)),
+      powerCoreProduction: new Decimal(0),
     }
     updateHighestValues(state, fakeLowResult)
     expect(state.highestValue.basic.toString()).toBe(afterFirst.basic)
@@ -41,6 +44,9 @@ describe('updateHighestValues', () => {
       final: state.cells.map((_, i) => (i === 0 ? new Decimal(9999) : new Decimal(0))),
       production: new Decimal(0),
       crits: state.cells.map(() => false),
+      basePowerCores: state.cells.map(() => new Decimal(0)),
+      finalPowerCores: state.cells.map(() => new Decimal(0)),
+      powerCoreProduction: new Decimal(0),
     }
     updateHighestValues(state, fakeHighResult)
     expect(state.highestValue.basic.toString()).toBe('9999')

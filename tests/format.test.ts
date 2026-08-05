@@ -12,21 +12,28 @@ describe('format - shared behaviour across all modes', () => {
   })
 
   it('negative numbers get a leading minus, formatted the same as their positive counterpart', () => {
-    expect(format(new Decimal(-1500), 'scientific')).toBe('-1,500')
-    expect(format(new Decimal(-2_500_000), 'scientific')).toBe('-2.50e6')
+    expect(format(new Decimal(-1500), 'scientific')).toBe('-1.50K')
+    expect(format(new Decimal(-2_500_000), 'scientific')).toBe('-2.50M')
+    expect(format(new Decimal(-500), 'engineering')).toBe('-500')
   })
 })
 
 describe('format - scientific mode', () => {
-  it('1,000 to 1e6: thousands separators', () => {
-    expect(format(new Decimal(1500), 'scientific')).toBe('1,500')
-    expect(format(new Decimal(999_999), 'scientific')).toBe('999,999')
-  })
-
-  it('1e6 and above: mantissa.XXe{exponent}', () => {
-    expect(format(new Decimal(1_000_000), 'scientific')).toBe('1.00e6')
-    expect(format(new Decimal(1_230_000_000), 'scientific')).toBe('1.23e9')
+  it('deliberately produces identical output to suffix mode (confirmed with the user): K/M/B/T from 1,000, then straight to scientific past a trillion', () => {
+    expect(format(new Decimal(1500), 'scientific')).toBe('1.50K')
+    // Tier is chosen from the raw exponent before rounding, so 999,999
+    // (exponent 5, still the K tier) rounds up to 1000.00K rather than
+    // rolling over to 1.00M - a pre-existing formatSuffix quirk at this
+    // exact boundary, unrelated to this change.
+    expect(format(new Decimal(999_999), 'scientific')).toBe('1000.00K')
+    expect(format(new Decimal(1_000_000), 'scientific')).toBe('1.00M')
+    expect(format(new Decimal(1_230_000_000), 'scientific')).toBe('1.23B')
+    expect(format(new Decimal(1e15), 'scientific')).toBe('1.00e15')
     expect(format(Decimal.fromMantissaExponent(1.23456, 350), 'scientific')).toBe('1.23e350')
+
+    for (const n of [1500, 999_999, 1_000_000, 1_230_000_000, 1e15, 1e18]) {
+      expect(format(new Decimal(n), 'scientific')).toBe(format(new Decimal(n), 'suffix'))
+    }
   })
 })
 

@@ -1,8 +1,25 @@
 import Decimal from 'break_infinity.js'
 import type { Facing, GameState, TickResult } from './types'
 import { cellIndex } from './types'
-import { BASIC_BASE_VALUE, BASIC_MULT, BUFF_V1_POWER, BUFF_V2_POWER, BUFF_TICK_INTERVAL } from './config'
-import { generatorValueMultiplier, basicValueBonus, critChanceFor, critAmountFor } from './upgrades'
+import {
+  BASIC_BASE_VALUE,
+  BASIC_MULT,
+  BUFF_V1_PCT_PER_FIRING,
+  BUFF_V2_PCT_PER_FIRING,
+  MIN_BUFF_POWER_PER_FIRING,
+  BUFF_TICK_INTERVAL,
+  POWER_CORE_GENERATOR_BASE_TICKS,
+  POWER_CORE_GENERATOR_TICKS_PER_LEVEL,
+} from './config'
+import {
+  generatorValueMultiplier,
+  basicValueBonus,
+  critChanceFor,
+  critAmountFor,
+  powerCoreChanceFor,
+  powerCoreAmountFor,
+  buffScalingBaseValue,
+} from './upgrades'
 
 function inBounds(x: number, y: number, width: number, height: number): boolean {
   return x >= 0 && x < width && y >= 0 && y < height
@@ -151,31 +168,58 @@ function neighborIndices(
  * represented here - it's handled separately via precomputed running sums,
  * per the required optimisation (spec §5).
  */
-function leechRangeIndices(x: number, y: number, level: number, width: number, height: number): number[] {
+export function leechRangeIndices(x: number, y: number, level: number, width: number, height: number): number[] {
   if (level <= 0) return neighborIndices(x, y, width, height, ORTHOGONAL_DELTAS)
   if (level === 1) return neighborIndices(x, y, width, height, MOORE_DELTAS)
   return []
 }
 
 /**
+ * Power added per firing, per targeted side, for a Buff V1 - a percentage of
+ * buffScalingBaseValue rather than a hardcoded flat number (see config.ts
+ * BUFF_V1_PCT_PER_FIRING for why), floored at MIN_BUFF_POWER_PER_FIRING.
+ * Level only buys coverage for V1 (see facingTargetIndices), never rate.
+ */
+export function buffV1PowerPerFiring(state: GameState): number {
+  return Math.max(MIN_BUFF_POWER_PER_FIRING, buffScalingBaseValue(state) * BUFF_V1_PCT_PER_FIRING)
+}
+
+/**
+ * Power added per firing, to every Basic on the board, for a Buff V2 at this
+ * level - same scaling-percentage idea as buffV1PowerPerFiring, but the rate
+ * itself grows with level (0.5% -> 8%, see BUFF_V2_PCT_PER_FIRING) since V2's
+ * coverage is already maximal (whole board) from level 0.
+ */
+export function buffV2PowerPerFiring(state: GameState, level: number): number {
+  return Math.max(MIN_BUFF_POWER_PER_FIRING, buffScalingBaseValue(state) * BUFF_V2_PCT_PER_FIRING[level])
+}
+
+/**
  * Applies `times` buff firings at once - O(cells), not O(cells * times).
- * Buff V1: each firing gives BUFF_V1_POWER to every cell it currently
- * targets (1/2/4 depending on level - see facingTargetIndices), only if that
- * cell is a Basic. Buff V2: each firing gives its level's power to EVERY
- * Basic on the board, regardless of position.
+ * Buff V1: each firing gives buffV1PowerPerFiring(state) to every cell it
+ * currently targets (1/2/4 depending on level - see facingTargetIndices),
+ * only if that cell is a Basic. Buff V2: each firing gives
+ * buffV2PowerPerFiring(state, level) to EVERY Basic on the board, regardless
+ * of position, summed across every Buff V2 placed.
  *
- * `times` > 1 is what makes offline.ts's closed-form catch-up possible: a
- * day away is ~17,000 firings, and this applies all of them in one pass
- * instead of looping firing-by-firing. Both buff types stay O(cells) here,
- * so that closed-form property is preserved.
+ * Both power-per-firing values are computed once up front, not per cell -
+ * they depend only on account-wide upgrade state (buffScalingBaseValue),
+ * never on anything that changes mid-loop, so this stays O(cells) and the
+ * result stays a genuinely FIXED increment per firing across the whole call -
+ * exactly what keeps offline.ts's closed-form catch-up valid, since it treats
+ * production as linear in "firings so far" (see offline.ts's own comment on
+ * applyOfflineProgress). `times` > 1 is what makes that catch-up possible: a
+ * day away is ~17,000 firings, applied here in one pass instead of looping
+ * firing-by-firing.
  */
 export function advanceBuffsBy(state: GameState, times: number): void {
   if (times <= 0) return
   const { width, height, cells } = state
+  const v1Power = buffV1PowerPerFiring(state)
 
   let buffV2Power = 0
   for (const cell of cells) {
-    if (cell.type === 'buffV2') buffV2Power += BUFF_V2_POWER[cell.level]
+    if (cell.type === 'buffV2') buffV2Power += buffV2PowerPerFiring(state, cell.level)
   }
 
   for (let y = 0; y < height; y++) {
@@ -185,7 +229,7 @@ export function advanceBuffsBy(state: GameState, times: number): void {
       for (const targetIdx of facingTargetIndices(x, y, cell.facing, cell.level, width, height)) {
         const target = cells[targetIdx]
         if (target.type !== 'basic') continue
-        target.buffAccum = target.buffAccum.plus(BUFF_V1_POWER * times)
+        target.buffAccum = target.buffAccum.plus(v1Power * times)
       }
     }
   }
@@ -241,6 +285,85 @@ export function expectedCritMultipliers(state: GameState): number[] {
 }
 
 /**
+ * A Power Core Generator's period in ticks - how often it produces (10 at
+ * level 0, down to 6 at level 4, confirmed with the user as a per-cell
+ * value, since every generator is leveled independently rather than sharing
+ * one global timer the way Buffs do).
+ */
+export function powerCoreGeneratorPeriod(level: number): number {
+  return POWER_CORE_GENERATOR_BASE_TICKS - level * POWER_CORE_GENERATOR_TICKS_PER_LEVEL
+}
+
+/**
+ * Advances every Power Core Generator's progress by exactly one real tick,
+ * mutating `coreProgress` for real, and returns how many power cores each
+ * cell produced THIS tick (0 for cells that didn't cross their period
+ * boundary, or aren't a generator). This is what recalculate() uses to seed
+ * `basePowerCores` for a live tick - offline catch-up uses its own
+ * closed-form per-cell-period derivation instead (see offline.ts), since
+ * this per-tick approach doesn't scale to a day-long gap.
+ */
+export function firePowerCoreGenerators(state: GameState): Decimal[] {
+  const n = state.cells.length
+  const amounts: Decimal[] = new Array(n).fill(new Decimal(0))
+  const amount = powerCoreAmountFor(state)
+  for (let i = 0; i < n; i++) {
+    const cell = state.cells[i]
+    if (cell.type !== 'powerCoreGenerator') continue
+    const period = powerCoreGeneratorPeriod(cell.level)
+    cell.coreProgress += 1
+    if (cell.coreProgress >= period) {
+      cell.coreProgress -= period
+      amounts[i] = new Decimal(amount)
+    }
+  }
+  return amounts
+}
+
+/**
+ * One power-core-chance roll per applicable cell (Basic and Leech - both
+ * "produce energy", confirmed to include Leech - each rolling
+ * independently, unlike crit which resolves once and is visible to Leech
+ * through `base`; a power-core-chance proc is a private bonus to whichever
+ * cell rolled it, not something a neighbouring Leech can steal). Returns the
+ * amount produced per cell (0 on a miss).
+ */
+export function rollPowerCoreProcs(state: GameState, rng: () => number = Math.random): Decimal[] {
+  const n = state.cells.length
+  const amounts: Decimal[] = new Array(n).fill(new Decimal(0))
+  const chance = powerCoreChanceFor(state)
+  const amount = powerCoreAmountFor(state)
+  for (let i = 0; i < n; i++) {
+    const cell = state.cells[i]
+    if (cell.type !== 'basic' && cell.type !== 'leech') continue
+    if (rng() < chance) amounts[i] = new Decimal(amount)
+  }
+  return amounts
+}
+
+/**
+ * Expected power cores produced per tick, per cell - a stable average rather
+ * than a live per-tick snapshot (which is 0 on almost every tick and spikes
+ * on the rare one something actually procs, the same "bounces around"
+ * problem crit has - see expectedCritMultipliers above). Two averaged
+ * sources, fed through the same Leech-stealing pass recalculate() uses for a
+ * real tick so a Leech's number properly includes what it'd expect to steal:
+ * Power Core Chance's constant rate (chance x amount, private to whichever
+ * Basic/Leech it belongs to) and each Power Core Generator's duty-cycle rate
+ * (amount / period), rather than its instantaneous 0-or-a-lump-sum state.
+ */
+export function expectedPowerCoreProduction(state: GameState): Decimal[] {
+  const chance = powerCoreChanceFor(state)
+  const amount = powerCoreAmountFor(state)
+  const chanceRate = new Decimal(chance).times(amount)
+  const chanceAmounts = state.cells.map((c) => (c.type === 'basic' || c.type === 'leech' ? chanceRate : new Decimal(0)))
+  const generatorAmounts = state.cells.map((c) =>
+    c.type === 'powerCoreGenerator' ? new Decimal(amount).div(powerCoreGeneratorPeriod(c.level)) : new Decimal(0),
+  )
+  return recalculate(state, undefined, generatorAmounts, chanceAmounts).finalPowerCores
+}
+
+/**
  * The two-pass board evaluation. Pass 2 reads only base[], never final[] -
  * this is what keeps the calculation terminating instead of an unstable
  * feedback loop (spec §5, §15 rule 2).
@@ -250,18 +373,34 @@ export function expectedCritMultipliers(state: GameState): number[] {
  * visible to a Leech reading that base, unlike BASIC_MULT below, which stays
  * private to a Basic's own final output. Omitted entirely (the default) for
  * pure display/preview calls, which should show honest, un-critted values.
+ *
+ * `powerCoreGeneratorAmounts`/`powerCoreChanceAmounts`, if given, are what
+ * firePowerCoreGenerators()/rollPowerCoreProcs() returned for THIS
+ * evaluation - see the parallel power-core pipeline below, which mirrors the
+ * energy one almost exactly except a Power Core Chance proc is private to
+ * whichever Basic/Leech rolled it (added directly in pass 2, never part of
+ * the Leech-stealable base_pc array) rather than visible to Leech the way
+ * crit is.
  */
-export function recalculate(state: GameState, critMultipliers?: number[]): TickResult {
+export function recalculate(
+  state: GameState,
+  critMultipliers?: number[],
+  powerCoreGeneratorAmounts?: Decimal[],
+  powerCoreChanceAmounts?: Decimal[],
+): TickResult {
   const { width, height, cells } = state
   const n = width * height
   const base: Decimal[] = new Array(n)
   const final: Decimal[] = new Array(n)
   const crits: boolean[] = new Array(n).fill(false)
+  const basePowerCores: Decimal[] = new Array(n)
+  const finalPowerCores: Decimal[] = new Array(n)
 
   const valueMult = generatorValueMultiplier(state)
   const valueBonus = basicValueBonus(state)
 
-  // --- Pass 1a: basics and buffs. Leeches depend on these; never the reverse. ---
+  // --- Pass 1a: basics, buffs, and power core generators. Leeches depend on
+  // these; never the reverse. ---
   // Deviation from the original spec: a Basic's `base` (what Leeches read) no
   // longer grows with its own level at all - that flat growth moved out into
   // the account-wide Basic Generator Value upgrade (basicValueBonus). A
@@ -276,18 +415,26 @@ export function recalculate(state: GameState, critMultipliers?: number[]): TickR
       base[i] = raw.times(critMult)
       crits[i] = critMult > 1
     } else {
-      base[i] = new Decimal(0) // buffV1, buffV2, empty, and leech (leech filled in below)
+      base[i] = new Decimal(0) // buffV1, buffV2, empty, powerCoreGenerator, and leech (leech filled in below)
+    }
+    // basePowerCores: only a generator's own proc is "stealable" by a Leech -
+    // a Basic/Leech's own Power Core Chance proc is private, added in pass 2
+    // instead (never part of this array, so it can't be stolen).
+    basePowerCores[i] = cell.type === 'powerCoreGenerator' && powerCoreGeneratorAmounts ? powerCoreGeneratorAmounts[i] : new Decimal(0)
+  }
+
+  // Running sums of all non-leech base values, computed once - O(N). Required
+  // so level-2 (whole board) leeches are O(1) instead of O(N) each.
+  let nonLeechSum = new Decimal(0)
+  let nonLeechPowerCoreSum = new Decimal(0)
+  for (let i = 0; i < n; i++) {
+    if (cells[i].type !== 'leech') {
+      nonLeechSum = nonLeechSum.plus(base[i])
+      nonLeechPowerCoreSum = nonLeechPowerCoreSum.plus(basePowerCores[i])
     }
   }
 
-  // Running sum of all non-leech base values, computed once - O(N). Required
-  // so level-2 (whole board) leeches are O(1) instead of O(N) each.
-  let nonLeechSum = new Decimal(0)
-  for (let i = 0; i < n; i++) {
-    if (cells[i].type !== 'leech') nonLeechSum = nonLeechSum.plus(base[i])
-  }
-
-  // --- Pass 1b: leech.base = sum of NON-LEECH base values within range ---
+  // --- Pass 1b: leech.base = sum of NON-LEECH base values within range (energy and power cores both) ---
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const i = cellIndex(x, y, width)
@@ -295,60 +442,91 @@ export function recalculate(state: GameState, critMultipliers?: number[]): TickR
       if (cell.type !== 'leech') continue
       if (cell.level >= 2) {
         base[i] = nonLeechSum // whole board; nonLeechSum already excludes leeches
+        basePowerCores[i] = nonLeechPowerCoreSum
       } else {
         let sum = new Decimal(0)
+        let pcSum = new Decimal(0)
         for (const j of leechRangeIndices(x, y, cell.level, width, height)) {
-          if (cells[j].type !== 'leech') sum = sum.plus(base[j])
+          if (cells[j].type !== 'leech') {
+            sum = sum.plus(base[j])
+            pcSum = pcSum.plus(basePowerCores[j])
+          }
         }
         base[i] = sum
+        basePowerCores[i] = pcSum
       }
     }
   }
 
-  // Running sum of all leech base values, computed once after pass 1b -
+  // Running sums of all leech base values, computed once after pass 1b -
   // required so level-2 leeches can read "other leeches" in O(1) in pass 2.
   let leechBaseSum = new Decimal(0)
+  let leechPowerCoreBaseSum = new Decimal(0)
   for (let i = 0; i < n; i++) {
-    if (cells[i].type === 'leech') leechBaseSum = leechBaseSum.plus(base[i])
+    if (cells[i].type === 'leech') {
+      leechBaseSum = leechBaseSum.plus(base[i])
+      leechPowerCoreBaseSum = leechPowerCoreBaseSum.plus(basePowerCores[i])
+    }
   }
 
-  // --- Pass 2: final values, reading only base[] ---
+  // --- Pass 2: final values, reading only base[]/basePowerCores[] ---
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const i = cellIndex(x, y, width)
       const cell = cells[i]
+      const chanceProc = powerCoreChanceAmounts ? powerCoreChanceAmounts[i] : new Decimal(0)
       if (cell.type === 'basic') {
         // The level multiplier applies here, to the Basic's own output only.
         // base[i] (pre-multiplier, but crit-inclusive) is what Leeches read
         // in pass 1b above.
         final[i] = base[i].times(BASIC_MULT[cell.level])
+        finalPowerCores[i] = chanceProc // private Power Core Chance proc only - nothing to steal from
       } else if (cell.type === 'buffV1' || cell.type === 'buffV2' || cell.type === 'empty') {
         final[i] = new Decimal(0)
+        finalPowerCores[i] = new Decimal(0)
+      } else if (cell.type === 'powerCoreGenerator') {
+        final[i] = new Decimal(0) // produces power cores only, no energy
+        // No private per-cell multiplier the way BASIC_MULT is for Basic -
+        // the cell's own level only sets its period (speed), not the amount.
+        finalPowerCores[i] = basePowerCores[i]
       } else {
-        // leech.final = leech.base + sum of OTHER leeches' base values within range
+        // leech.final = leech.base + sum of OTHER leeches' base values within range (energy and power cores both)
         if (cell.level >= 2) {
           final[i] = base[i].plus(leechBaseSum.minus(base[i]))
+          finalPowerCores[i] = basePowerCores[i].plus(leechPowerCoreBaseSum.minus(basePowerCores[i])).plus(chanceProc)
         } else {
           let otherLeeches = new Decimal(0)
+          let otherLeechesPowerCores = new Decimal(0)
           for (const j of leechRangeIndices(x, y, cell.level, width, height)) {
-            if (cells[j].type === 'leech') otherLeeches = otherLeeches.plus(base[j])
+            if (cells[j].type === 'leech') {
+              otherLeeches = otherLeeches.plus(base[j])
+              otherLeechesPowerCores = otherLeechesPowerCores.plus(basePowerCores[j])
+            }
           }
           final[i] = base[i].plus(otherLeeches)
+          // Own steal (from nearby generators) + other leeches' steal within
+          // range + this Leech's own private Power Core Chance proc.
+          finalPowerCores[i] = basePowerCores[i].plus(otherLeechesPowerCores).plus(chanceProc)
         }
       }
     }
   }
 
   let production = new Decimal(0)
-  for (let i = 0; i < n; i++) production = production.plus(final[i])
+  let powerCoreProduction = new Decimal(0)
+  for (let i = 0; i < n; i++) {
+    production = production.plus(final[i])
+    powerCoreProduction = powerCoreProduction.plus(finalPowerCores[i])
+  }
 
-  return { base, final, production, crits }
+  return { base, final, production, crits, basePowerCores, finalPowerCores, powerCoreProduction }
 }
 
 /**
  * Advances the game by exactly one logical tick, per the tick order in spec
- * §5. Rolls real crits (not the expected-value approximation offline catch-up
- * uses) so they visibly flash on the board - see rollCrits.
+ * §5. Rolls real crits and power-core procs (not the expected-value
+ * approximations offline catch-up uses) so they visibly flash/show on the
+ * board - see rollCrits, firePowerCoreGenerators, rollPowerCoreProcs.
  */
 export function tick(state: GameState, rng: () => number = Math.random): TickResult {
   state.tickCount += 1
@@ -356,8 +534,12 @@ export function tick(state: GameState, rng: () => number = Math.random): TickRes
     advanceBuffs(state)
   }
   const critMultipliers = rollCrits(state, rng)
-  const result = recalculate(state, critMultipliers)
+  const powerCoreGeneratorAmounts = firePowerCoreGenerators(state)
+  const powerCoreChanceAmounts = rollPowerCoreProcs(state, rng)
+  const result = recalculate(state, critMultipliers, powerCoreGeneratorAmounts, powerCoreChanceAmounts)
   state.currency = state.currency.plus(result.production)
   state.lifetimeCurrencyEarned = state.lifetimeCurrencyEarned.plus(result.production)
+  state.currentRunEnergyEarned = state.currentRunEnergyEarned.plus(result.production)
+  state.powerCores = state.powerCores.plus(result.powerCoreProduction)
   return result
 }

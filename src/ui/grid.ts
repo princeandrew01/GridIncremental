@@ -2,7 +2,7 @@ import type { GameState, TickResult } from '../game/types'
 import { cellIndex } from '../game/types'
 import { format } from '../game/format'
 import type { NumberFormatMode } from '../game/format'
-import { activeFacings } from '../game/engine'
+import { activeFacings, powerCoreGeneratorPeriod } from '../game/engine'
 import { critChanceFor, critAmountFor } from '../game/upgrades'
 
 export interface GridSelection {
@@ -14,6 +14,7 @@ export interface GridHandle {
   update(
     state: GameState,
     result: TickResult,
+    displayResult: TickResult,
     selected: GridSelection | null,
     canPlaceCurrent: boolean,
     formatMode: NumberFormatMode,
@@ -26,6 +27,7 @@ export const TYPE_GLYPH: Record<string, string> = {
   leech: 'L',
   buffV1: 'F',
   buffV2: 'G',
+  powerCoreGenerator: 'C',
 }
 
 export const TYPE_LABEL: Record<string, string> = {
@@ -34,6 +36,7 @@ export const TYPE_LABEL: Record<string, string> = {
   leech: 'Leech',
   buffV1: 'Buff V1',
   buffV2: 'Buff V2',
+  powerCoreGenerator: 'Power Core Generator',
 }
 
 // How long the crit badge (see cell-crit-badge below) stays on a cell after
@@ -77,6 +80,7 @@ export function createGrid(
   function update(
     state: GameState,
     result: TickResult,
+    displayResult: TickResult,
     selected: GridSelection | null,
     canPlaceCurrent: boolean,
     formatMode: NumberFormatMode,
@@ -88,7 +92,15 @@ export function createGrid(
         const btn = buttons[i]
         const isSelected = selected !== null && selected.x === x && selected.y === y
         const isBuff = cell.type === 'buffV1' || cell.type === 'buffV2'
-        const value = cell.type === 'empty' || isBuff ? '' : format(result.final[i], formatMode)
+        // A Basic/Leech's cell value comes from displayResult (a fresh,
+        // un-critted recalculate() - see main.ts render()), not the live
+        // per-tick `result` - `result.final[i]` bakes in that tick's real
+        // crit roll, which made the number visibly jump around every time a
+        // crit fired then fall back the next tick ("whiplash", per the
+        // user). The crit BADGE below still reacts live; only the number
+        // itself is held stable.
+        const value =
+          cell.type === 'empty' || isBuff || cell.type === 'powerCoreGenerator' ? '' : format(displayResult.final[i], formatMode)
         const crit = cell.type === 'basic' && result.crits[i]
         if (crit) lastCritAt[i] = performance.now()
         const recentlyCritted = performance.now() - lastCritAt[i] < RECENT_CRIT_WINDOW_MS
@@ -108,7 +120,7 @@ export function createGrid(
         // the browser drops the click rather than firing it. That's why a
         // freshly-placed cell sometimes took several clicks before it
         // "took" - not a logic bug in the click handler, a DOM-churn race.
-        const signature = `${cell.type}|${cell.level}|${facings.join(',')}|${value}|${isSelected}|${canPlaceCurrent}|${recentlyCritted}|${critStats}`
+        const signature = `${cell.type}|${cell.level}|${cell.coreProgress}|${facings.join(',')}|${value}|${isSelected}|${canPlaceCurrent}|${recentlyCritted}|${critStats}`
         if (lastSignature[i] === signature) continue
         lastSignature[i] = signature
 
@@ -143,6 +155,20 @@ export function createGrid(
           btn.innerHTML = `<span class="cell-glyph">${TYPE_GLYPH[cell.type]}${cell.level}</span>`
           btn.setAttribute('aria-label', `Buff V2 level ${cell.level}, column ${x + 1}, row ${y + 1}, buffs the whole board.`)
           btn.title = `Buff V2 — Level ${cell.level}\nBuffs every Basic on the board.`
+        } else if (cell.type === 'powerCoreGenerator') {
+          // Production is discrete (a proc every `period` ticks), not a
+          // per-tick trickle like Basic/Leech - shows a ticks-remaining
+          // countdown instead of a per-tick value.
+          const period = powerCoreGeneratorPeriod(cell.level)
+          const ticksLeft = period - cell.coreProgress
+          btn.innerHTML =
+            `<span class="cell-glyph">${TYPE_GLYPH[cell.type]}${cell.level}</span>` +
+            `<span class="cell-value">${ticksLeft}</span>`
+          btn.setAttribute(
+            'aria-label',
+            `Power Core Generator level ${cell.level}, column ${x + 1}, row ${y + 1}, ${ticksLeft} ticks until next core.`,
+          )
+          btn.title = `Power Core Generator — Level ${cell.level}\nNext core in ${ticksLeft} / ${period} ticks.`
         } else {
           // The crit badge is drawn directly on the cell, not left to a
           // hover tooltip: native tooltips take ~500ms-1s to appear after

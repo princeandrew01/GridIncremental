@@ -1,3 +1,4 @@
+import Decimal from 'break_infinity.js'
 import type { GameState } from '../game/types'
 import { format } from '../game/format'
 import type { NumberFormatMode } from '../game/format'
@@ -90,7 +91,7 @@ export function createAchievementsPanel(container: HTMLElement): AchievementsPan
       els.starsRow.setAttribute('aria-label', `${unlockedCount} of ${category.tiers.length} unlocked`)
 
       els.progress.textContent = nextTier
-        ? `${format(current, formatMode)} / ${nextTier.threshold.toLocaleString()}`
+        ? `${format(current, formatMode)} / ${format(new Decimal(nextTier.threshold), formatMode)}`
         : 'All unlocked!'
     })
   }

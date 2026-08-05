@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import Decimal from 'break_infinity.js'
-import { makeGameState, cellIndex, makeEmptyUpgradeLevels } from '../src/game/types'
+import { makeGameState, cellIndex, makeEmptyUpgradeLevels, makeEmptyPowerCoreUpgradeLevels } from '../src/game/types'
 import type { GameState } from '../src/game/types'
 import {
   serialize,
@@ -38,6 +38,13 @@ function buildInterestingState(): GameState {
   buffV2.level = 3
   buffV2.placementCost = new Decimal(4000)
 
+  // (4x3 board has a 5th cell available at (0,1) for the new generator type.)
+  const powerCoreGenerator = state.cells[cellIndex(0, 1, 4)]
+  powerCoreGenerator.type = 'powerCoreGenerator'
+  powerCoreGenerator.level = 2
+  powerCoreGenerator.placementCost = new Decimal(15)
+  powerCoreGenerator.coreProgress = 6
+
   // Beyond Number.MAX_VALUE (~1.8e308) - the whole reason break_infinity
   // exists, and exactly what a naive JSON round-trip through a plain number
   // would silently mangle into Infinity.
@@ -54,6 +61,22 @@ function buildInterestingState(): GameState {
     removalRefund: 4,
     gridSize: 2,
   }
+
+  state.powerCores = Decimal.fromMantissaExponent(4.5, 20)
+  state.powerCoreUpgrades = {
+    powerCoreReduction: 5,
+    powerCoreAmount: 12,
+    powerCoreChance: 3,
+    unlockPowerCoreGenerator: 1,
+    tickSpeed: 2,
+    basicValue: 999,
+    critChance: 1,
+    critAmount: 4,
+    gridSize: 1,
+  }
+  state.currentRunEnergyEarned = Decimal.fromMantissaExponent(6.5, 40)
+  state.bestRunEnergyEarned = Decimal.fromMantissaExponent(7.5, 45)
+  state.powerCoreExponentsAwarded = 6
 
   state.startedAt = 1_699_000_000_000
   state.prestigeStartedAt = 1_699_500_000_000
@@ -83,9 +106,15 @@ function expectStatesEqual(a: GameState, b: GameState): void {
     expect(b.cells[i].facing).toBe(a.cells[i].facing)
     expect(b.cells[i].buffAccum.toString()).toBe(a.cells[i].buffAccum.toString())
     expect(b.cells[i].placementCost.toString()).toBe(a.cells[i].placementCost.toString())
+    expect(b.cells[i].coreProgress).toBe(a.cells[i].coreProgress)
   }
 
   expect(b.upgrades).toEqual(a.upgrades)
+  expect(b.powerCores.toString()).toBe(a.powerCores.toString())
+  expect(b.powerCoreUpgrades).toEqual(a.powerCoreUpgrades)
+  expect(b.currentRunEnergyEarned.toString()).toBe(a.currentRunEnergyEarned.toString())
+  expect(b.bestRunEnergyEarned.toString()).toBe(a.bestRunEnergyEarned.toString())
+  expect(b.powerCoreExponentsAwarded).toBe(a.powerCoreExponentsAwarded)
   expect(b.startedAt).toBe(a.startedAt)
   expect(b.prestigeStartedAt).toBe(a.prestigeStartedAt)
   expect(b.activePlayMs).toBe(a.activePlayMs)
@@ -151,7 +180,7 @@ describe('save/load', () => {
     }
 
     const migrated = migrate(v1Save as unknown as SaveData)
-    expect(migrated.version).toBe(5) // cascades v1 -> v2 -> v3 -> v4 -> v5 in one call
+    expect(migrated.version).toBe(6) // cascades v1 -> v2 -> v3 -> v4 -> v5 -> v6 in one call
     expect(migrated.startedAt).toBe(v1Save.lastSaved)
     expect(migrated.prestigeStartedAt).toBe(v1Save.lastSaved)
     expect(migrated.activePlayMs).toBe(0)
@@ -169,6 +198,15 @@ describe('save/load', () => {
     expect(migrated.cells[0].l).toBe(2)
     expect(migrated.cells[1].l).toBe(0) // empty cell: stays 0
     expect(migrated.upgrades).toEqual(makeEmptyUpgradeLevels())
+    // v5 -> v6: power cores backfill to empty/zero, except currentRun/
+    // bestRunEnergyEarned, which take the same "best available guess"
+    // (current lifetimeCurrencyEarned) the v1->v2 stats backfill used.
+    expect(migrated.cells.every((c) => c.cp === 0)).toBe(true)
+    expect(migrated.powerCores).toBe('0')
+    expect(migrated.powerCoreUpgrades).toEqual(makeEmptyPowerCoreUpgradeLevels())
+    expect(migrated.currentRunEnergyEarned).toBe('4200')
+    expect(migrated.bestRunEnergyEarned).toBe('4200')
+    expect(migrated.powerCoreExponentsAwarded).toBe(0)
 
     // And it loads cleanly end-to-end through deserialize, not just migrate().
     const state = deserialize(v1Save as unknown as SaveData)
@@ -177,6 +215,7 @@ describe('save/load', () => {
     expect(state.cells[0].placementCost.toString()).toBe('0')
     expect(state.currency.toString()).toBe('4200')
     expect(state.lifetimeCurrencyEarned.toString()).toBe('4200')
+    expect(state.powerCores.toString()).toBe('0')
   })
 
   it('migrate() backfills a v2 save (predating placementCost and Alpha 0.2\'s rebalance) to the current version', () => {
@@ -200,7 +239,7 @@ describe('save/load', () => {
     }
 
     const migrated = migrate(v2Save as unknown as SaveData)
-    expect(migrated.version).toBe(5)
+    expect(migrated.version).toBe(6)
     expect(migrated.cells[0].p).toBe('0')
     expect(migrated.cells[0].l).toBe(0) // rebased: min(1-1, 5) = 0
     expect(migrated.upgrades).toEqual(makeEmptyUpgradeLevels())
@@ -233,7 +272,7 @@ describe('save/load', () => {
     }
 
     const migrated = migrate(v3Save as unknown as SaveData)
-    expect(migrated.version).toBe(5)
+    expect(migrated.version).toBe(6)
     expect(migrated.cells[0].l).toBe(5) // basic: min(10-1, MAX_LEVEL.basic=5) = 5, clamped down from 9
     expect(migrated.cells[0].t).toBe(1)
     expect(migrated.cells[1].l).toBe(2) // buffV1: min(5-1, MAX_LEVEL.buffV1=2) = 2, clamped down from 4
@@ -272,7 +311,7 @@ describe('save/load', () => {
     }
 
     const migrated = migrate(v4Save as unknown as SaveData)
-    expect(migrated.version).toBe(5)
+    expect(migrated.version).toBe(6)
     expect(migrated.upgrades.gridSize).toBe(0) // backfilled
     expect(migrated.upgrades.tickSpeed).toBe(5) // everything else carries through untouched
     expect(migrated.upgrades.basicValue).toBe(100)
@@ -285,6 +324,61 @@ describe('save/load', () => {
     const state = deserialize(v4Save as unknown as SaveData)
     expect(state.upgrades.gridSize).toBe(0)
     expect(state.width).toBe(8)
+  })
+
+  it('migrate() backfills Power Cores entirely when migrating a v5 save (pre-Power-Cores) to v6', () => {
+    const v5Save = {
+      version: 5,
+      width: 3,
+      height: 1,
+      // Shaped exactly like a real v5 save: cells have no `cp` field at all
+      // (genuinely absent, not just 0 - the field didn't exist yet).
+      cells: [
+        { t: 1, l: 3, b: '0', f: 'up', p: '10' }, // basic
+        { t: 0, l: 0, b: '0', f: 'up', p: '0' }, // empty
+        { t: 2, l: 1, b: '0', f: 'up', p: '50' }, // leech
+      ],
+      currency: '9999',
+      tickCount: 500,
+      lastSaved: 1_700_000_000_000,
+      startedAt: 1_699_000_000_000,
+      prestigeStartedAt: 1_699_000_000_000,
+      activePlayMs: 1000,
+      lifetimeCurrencyEarned: '15000', // deliberately > currency, since some was spent - backfill should use this, not currency
+      totalGeneratorsBuilt: 2,
+      totalUpgrades: 3,
+      highestValue: { basic: '500', leech: '200' },
+      highestBuffLevel: 0,
+      unlockedAchievements: ['generators_built_1'],
+      upgrades: { tickSpeed: 1, basicValue: 0, generatorValuePct: 0, critChance: 0, critAmount: 0, removalRefund: 0, gridSize: 0 },
+    }
+
+    const migrated = migrate(v5Save as unknown as SaveData)
+    expect(migrated.version).toBe(6)
+    expect(migrated.cells.every((c) => c.cp === 0)).toBe(true)
+    expect(migrated.powerCores).toBe('0')
+    expect(migrated.powerCoreUpgrades).toEqual(makeEmptyPowerCoreUpgradeLevels())
+    // Backfilled from lifetimeCurrencyEarned (the "best available guess"),
+    // not from the current (already partly spent) currency balance.
+    expect(migrated.currentRunEnergyEarned).toBe('15000')
+    expect(migrated.bestRunEnergyEarned).toBe('15000')
+    expect(migrated.powerCoreExponentsAwarded).toBe(0)
+    // Everything from v5 carries through untouched.
+    expect(migrated.upgrades.tickSpeed).toBe(1)
+    expect(migrated.cells[0].l).toBe(3)
+
+    // Loads cleanly end-to-end, and - crucially - checkPowerCoreExponents
+    // (run by main.ts right after any load, same self-heal pattern as
+    // achievements) would immediately grant the power cores this save
+    // already earned the right to (100, 1000, 10000 all crossed by 15000),
+    // since powerCoreExponentsAwarded starts at 0 against a nonzero
+    // currentRunEnergyEarned - not exercised here, just confirming the
+    // preconditions for that self-heal are exactly right.
+    const state = deserialize(v5Save as unknown as SaveData)
+    expect(state.powerCores.toString()).toBe('0')
+    expect(state.currentRunEnergyEarned.toString()).toBe('15000')
+    expect(state.powerCoreExponentsAwarded).toBe(0)
+    expect(state.cells[0].coreProgress).toBe(0)
   })
 })
 

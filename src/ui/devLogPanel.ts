@@ -23,16 +23,25 @@ export function createDevLogPanel(container: HTMLElement): void {
   heading.textContent = 'Dev Log'
   popover.appendChild(heading)
 
-  for (const entry of DEV_LOG) {
-    const section = document.createElement('div')
+  // <details>/<summary> per version - collapsible for free, no toggle-state
+  // bookkeeping needed. The whole log was one long unbroken scroll before
+  // this; only the most recent version opens by default, everything older
+  // collapses so skimming past versions doesn't mean scrolling past all of
+  // their full change lists too.
+  DEV_LOG.forEach((entry, i) => {
+    const section = document.createElement('details')
     section.className = 'devlog-entry'
+    if (i === 0) section.open = true
 
-    const entryHeading = document.createElement('h3')
-    entryHeading.textContent = `${entry.version} — ${entry.date}`
-
-    const summary = document.createElement('p')
-    summary.className = 'devlog-summary'
-    summary.textContent = entry.summary
+    const entryHeading = document.createElement('summary')
+    entryHeading.className = 'devlog-entry-summary'
+    const versionLabel = document.createElement('span')
+    versionLabel.className = 'devlog-version'
+    versionLabel.textContent = `${entry.version} — ${entry.date}`
+    const summaryLabel = document.createElement('span')
+    summaryLabel.className = 'devlog-summary'
+    summaryLabel.textContent = entry.summary
+    entryHeading.append(versionLabel, summaryLabel)
 
     const list = document.createElement('ul')
     list.className = 'devlog-changes'
@@ -42,9 +51,9 @@ export function createDevLogPanel(container: HTMLElement): void {
       list.appendChild(li)
     }
 
-    section.append(entryHeading, summary, list)
+    section.append(entryHeading, list)
     popover.appendChild(section)
-  }
+  })
 
   toggleButton.addEventListener('click', (e) => {
     e.stopPropagation() // don't let the document-level "click away deselects" listener see this

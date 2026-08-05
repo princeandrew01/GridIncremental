@@ -10,10 +10,16 @@ import {
   nextFacing,
   rollCrits,
   expectedCritMultipliers,
+  powerCoreGeneratorPeriod,
+  firePowerCoreGenerators,
+  rollPowerCoreProcs,
+  expectedPowerCoreProduction,
+  buffV1PowerPerFiring,
+  buffV2PowerPerFiring,
   FACING_ORDER,
 } from '../src/game/engine'
-import { critChanceFor, critAmountFor } from '../src/game/upgrades'
-import { BASIC_MULT, BUFF_V2_POWER } from '../src/game/config'
+import { critChanceFor, critAmountFor, powerCoreAmountFor, powerCoreChanceFor, buffScalingBaseValue } from '../src/game/upgrades'
+import { BASIC_MULT, MIN_BUFF_POWER_PER_FIRING, BUFF_V1_PCT_PER_FIRING, BUFF_V2_PCT_PER_FIRING } from '../src/game/config'
 import type { GameState, CellType, Facing } from '../src/game/types'
 
 function place(state: GameState, x: number, y: number, type: CellType, level: number, facing?: Facing) {
@@ -211,16 +217,47 @@ describe('engine', () => {
     }
   })
 
-  it('9. a buff V2 buffs every basic on the board regardless of position, scaled by its level', () => {
+  it('9. a buff V2 buffs every basic on the board regardless of position, scaled by its level, floored at MIN_BUFF_POWER_PER_FIRING on a fresh board', () => {
     const state = makeGameState(4, 4)
     place(state, 0, 0, 'basic', 0)
     place(state, 3, 3, 'basic', 0)
-    place(state, 2, 1, 'buffV2', 2) // power = BUFF_V2_POWER[2] = 4
+    place(state, 2, 1, 'buffV2', 2)
+    // Fresh state: buffScalingBaseValue is just BASIC_BASE_VALUE (1), so even
+    // level 2's 2% rate (0.02) is far under the floor - MIN_BUFF_POWER_PER_FIRING
+    // (1) wins, same as the old flat-power behaviour looked like at small scale.
+    const expectedPower = buffV2PowerPerFiring(state, 2)
+    expect(expectedPower).toBe(MIN_BUFF_POWER_PER_FIRING)
 
     for (let i = 0; i < 5; i++) tick(state, NEVER_CRIT) // one firing (BUFF_TICK_INTERVAL = 5)
 
-    expect(state.cells[cellIndex(0, 0, 4)].buffAccum.toNumber()).toBe(BUFF_V2_POWER[2])
-    expect(state.cells[cellIndex(3, 3, 4)].buffAccum.toNumber()).toBe(BUFF_V2_POWER[2])
+    expect(state.cells[cellIndex(0, 0, 4)].buffAccum.toNumber()).toBe(expectedPower)
+    expect(state.cells[cellIndex(3, 3, 4)].buffAccum.toNumber()).toBe(expectedPower)
+  })
+
+  it("9b. buffScalingBaseValue is BASIC_BASE_VALUE plus Basic Generator Value bonus, times Generator Value % - the same for every Basic regardless of its own level", () => {
+    const state = makeGameState(1, 1)
+    state.upgrades.basicValue = 40 // both tracks' Basic Generator Value contribute additively
+    state.powerCoreUpgrades.basicValue = 10
+    state.upgrades.generatorValuePct = 5 // +25%
+
+    const expected = (1 + 40 + 10) * (1 + 5 * 0.05)
+    expect(buffScalingBaseValue(state)).toBeCloseTo(expected, 9)
+  })
+
+  it('9c. once buffScalingBaseValue is large enough, buff power actually scales by percentage instead of sitting at the floor', () => {
+    const state = makeGameState(1, 1)
+    state.upgrades.basicValue = 100_000 // pushes buffScalingBaseValue well past the floor threshold
+
+    const scalingBase = buffScalingBaseValue(state)
+    expect(buffV1PowerPerFiring(state)).toBeCloseTo(scalingBase * BUFF_V1_PCT_PER_FIRING, 6)
+    expect(buffV1PowerPerFiring(state)).toBeGreaterThan(MIN_BUFF_POWER_PER_FIRING)
+
+    for (let level = 0; level < BUFF_V2_PCT_PER_FIRING.length; level++) {
+      expect(buffV2PowerPerFiring(state, level)).toBeCloseTo(scalingBase * BUFF_V2_PCT_PER_FIRING[level], 6)
+    }
+    // Higher V2 level means a higher % rate, so strictly more power per firing
+    // once past the floor - confirms leveling V2 is meaningful at scale again.
+    expect(buffV2PowerPerFiring(state, 4)).toBeGreaterThan(buffV2PowerPerFiring(state, 0))
   })
 
   it('10. nextFacing: level 0 cycles all 4 sides, level 1 toggles the two axes, level 2 is a no-op', () => {
@@ -340,5 +377,118 @@ describe('engine', () => {
     expect(critResult.crits[cellIndex(0, 0, 2)]).toBe(true)
     expect(critResult.production.toNumber()).toBeGreaterThan(noCritResult.production.toNumber())
     expect(critResult.production.toNumber()).toBeCloseTo(critAmountFor(critState, 0), 9)
+  })
+
+  it('18. powerCoreGeneratorPeriod: 10 ticks at level 0, down to 6 at level 4', () => {
+    expect(powerCoreGeneratorPeriod(0)).toBe(10)
+    expect(powerCoreGeneratorPeriod(1)).toBe(9)
+    expect(powerCoreGeneratorPeriod(4)).toBe(6)
+  })
+
+  it('19. firePowerCoreGenerators produces nothing until the period elapses, then wraps coreProgress', () => {
+    const state = makeGameState(2, 1)
+    place(state, 0, 0, 'powerCoreGenerator', 0) // period 10
+    const idx = cellIndex(0, 0, 2)
+    for (let i = 0; i < 9; i++) {
+      const amounts = firePowerCoreGenerators(state)
+      expect(amounts[idx].toNumber()).toBe(0)
+    }
+    expect(state.cells[idx].coreProgress).toBe(9)
+    const amounts = firePowerCoreGenerators(state) // 10th call crosses the boundary
+    expect(amounts[idx].toNumber()).toBe(powerCoreAmountFor(state))
+    expect(state.cells[idx].coreProgress).toBe(0) // wrapped
+  })
+
+  it('20. a forced generator proc is visible to a nearby Leech (steals power cores, mirroring how energy is stolen from a Basic)', () => {
+    const state = makeGameState(3, 1)
+    place(state, 0, 0, 'powerCoreGenerator', 0)
+    place(state, 1, 0, 'leech', 0) // orthogonal range
+    const n = state.width * state.height
+    const genAmounts: Decimal[] = new Array(n).fill(new Decimal(0))
+    genAmounts[cellIndex(0, 0, 3)] = new Decimal(5) // force a proc worth 5
+
+    const result = recalculate(state, undefined, genAmounts)
+    expect(result.basePowerCores[cellIndex(0, 0, 3)].toNumber()).toBe(5)
+    expect(result.finalPowerCores[cellIndex(0, 0, 3)].toNumber()).toBe(5) // own output - no private per-cell multiplier
+    expect(result.finalPowerCores[cellIndex(1, 0, 3)].toNumber()).toBe(5) // Leech steals it
+    expect(result.powerCoreProduction.toNumber()).toBe(10) // generator's own + Leech's steal, both counted (stealing doesn't remove from the source)
+  })
+
+  it('21. a whole-board (level 2) Leech reads every generator via the O(1) running sum', () => {
+    const state = makeGameState(4, 1)
+    place(state, 0, 0, 'powerCoreGenerator', 0)
+    place(state, 3, 0, 'leech', 2) // whole board
+    const n = state.width * state.height
+    const genAmounts: Decimal[] = new Array(n).fill(new Decimal(0))
+    genAmounts[cellIndex(0, 0, 4)] = new Decimal(7)
+
+    const result = recalculate(state, undefined, genAmounts)
+    expect(result.finalPowerCores[cellIndex(3, 0, 4)].toNumber()).toBe(7)
+  })
+
+  it('22. Power Core Chance procs are private to whichever Basic/Leech rolled them - never visible to a nearby Leech (unlike a Power Core Generator)', () => {
+    const state = makeGameState(3, 1)
+    place(state, 0, 0, 'basic', 0)
+    place(state, 1, 0, 'leech', 0)
+    const n = state.width * state.height
+    const chanceAmounts: Decimal[] = new Array(n).fill(new Decimal(0))
+    chanceAmounts[cellIndex(0, 0, 3)] = new Decimal(3) // Basic privately procs 3 power cores
+
+    const result = recalculate(state, undefined, undefined, chanceAmounts)
+    expect(result.finalPowerCores[cellIndex(0, 0, 3)].toNumber()).toBe(3) // Basic keeps it
+    expect(result.finalPowerCores[cellIndex(1, 0, 3)].toNumber()).toBe(0) // Leech gets nothing - not stealable
+    expect(result.basePowerCores[cellIndex(0, 0, 3)].toNumber()).toBe(0) // never entered the stealable array at all
+  })
+
+  it('23. rollPowerCoreProcs only rolls for Basic and Leech, each independently, respecting powerCoreChanceFor', () => {
+    const state = makeGameState(4, 1)
+    place(state, 0, 0, 'basic', 0)
+    place(state, 1, 0, 'leech', 0)
+    place(state, 2, 0, 'buffV1', 0)
+    place(state, 3, 0, 'powerCoreGenerator', 0)
+    state.powerCoreUpgrades.powerCoreChance = 10 // nonzero, so a forced-hit roll actually hits (base chance is 0%)
+
+    const hit = rollPowerCoreProcs(state, ALWAYS_CRIT)
+    expect(hit[cellIndex(0, 0, 4)].toNumber()).toBeGreaterThan(0)
+    expect(hit[cellIndex(1, 0, 4)].toNumber()).toBeGreaterThan(0)
+    expect(hit[cellIndex(2, 0, 4)].toNumber()).toBe(0)
+    expect(hit[cellIndex(3, 0, 4)].toNumber()).toBe(0)
+
+    const miss = rollPowerCoreProcs(state, NEVER_CRIT)
+    expect(miss[cellIndex(0, 0, 4)].toNumber()).toBe(0)
+  })
+
+  it('24. Buffs do not affect a Power Core Generator - buffAccum stays 0 even when targeted, coreProgress only advances via real ticks', () => {
+    const state = makeGameState(3, 1)
+    place(state, 0, 0, 'powerCoreGenerator', 0)
+    place(state, 1, 0, 'buffV1', 2, 'left') // level 2: all 4 sides, would target (0,0) if this type could be buffed
+    for (let i = 0; i < 5; i++) tick(state, NEVER_CRIT) // one buff firing (BUFF_TICK_INTERVAL = 5)
+    expect(state.cells[cellIndex(0, 0, 3)].buffAccum.toNumber()).toBe(0) // buffs only ever target 'basic' cells
+    expect(state.cells[cellIndex(0, 0, 3)].coreProgress).toBe(5) // only real ticks advance this
+  })
+
+  it('25. expectedPowerCoreProduction: a stable average, not a live 0-or-a-lump-sum snapshot - Basic/Leech chance rate plus a Leech\'s share of a nearby generator\'s duty-cycle rate', () => {
+    const state = makeGameState(3, 1)
+    place(state, 0, 0, 'powerCoreGenerator', 0) // period 10, amount 1 -> duty-cycle rate 0.1/tick
+    place(state, 1, 0, 'basic', 0)
+    place(state, 2, 0, 'leech', 0) // orthogonal - reads the basic (0 energy-side effect here) but NOT the generator (out of range)
+    state.powerCoreUpgrades.powerCoreChance = 10 // nonzero, so the chance term isn't trivially 0 (2.5% * amount 1)
+
+    const expected = expectedPowerCoreProduction(state)
+    const chanceRate = powerCoreChanceFor(state) * powerCoreAmountFor(state)
+    // The generator's own rate never depends on rng or its exact phase - amount / period, always.
+    expect(expected[cellIndex(0, 0, 3)].toNumber()).toBeCloseTo(powerCoreAmountFor(state) / powerCoreGeneratorPeriod(0), 9)
+    // The Basic is out of the generator's steal range from itself (Basics don't steal), so it only carries its own chance rate.
+    expect(expected[cellIndex(1, 0, 3)].toNumber()).toBeCloseTo(chanceRate, 9)
+    // The Leech is out of range of the generator (2 cells away, orthogonal range is 1) - only its own chance rate, nothing stolen.
+    expect(expected[cellIndex(2, 0, 3)].toNumber()).toBeCloseTo(chanceRate, 9)
+
+    // Move the Leech next to the generator instead - now it should also carry the generator's duty-cycle rate.
+    const state2 = makeGameState(2, 1)
+    place(state2, 0, 0, 'powerCoreGenerator', 0)
+    place(state2, 1, 0, 'leech', 0)
+    const expected2 = expectedPowerCoreProduction(state2)
+    const generatorRate = powerCoreAmountFor(state2) / powerCoreGeneratorPeriod(0)
+    expect(expected2[cellIndex(1, 0, 2)].toNumber()).toBeCloseTo(generatorRate + powerCoreChanceFor(state2) * powerCoreAmountFor(state2), 9)
   })
 })

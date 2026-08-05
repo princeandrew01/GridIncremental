@@ -2,9 +2,10 @@ import { describe, it, expect } from 'vitest'
 import Decimal from 'break_infinity.js'
 import { makeGameState, cellIndex } from '../src/game/types'
 import type { GameState, CellType, Facing } from '../src/game/types'
-import { recalculate, advanceBuffs, expectedCritMultipliers } from '../src/game/engine'
+import { recalculate, advanceBuffs, expectedCritMultipliers, firePowerCoreGenerators } from '../src/game/engine'
 import { sumFloorDiv5, computeOfflineTicks, applyOfflineProgress } from '../src/game/offline'
 import { MAX_OFFLINE_TICKS, TICK_MS, BUFF_TICK_INTERVAL, OFFLINE_CRIT_VARIANCE } from '../src/game/config'
+import { powerCoreChanceFor, powerCoreAmountFor } from '../src/game/upgrades'
 
 function place(state: GameState, x: number, y: number, type: CellType, level: number, facing?: Facing) {
   const i = cellIndex(x, y, state.width)
@@ -144,6 +145,91 @@ describe('applyOfflineProgress', () => {
       expect(ratio).toBeGreaterThanOrEqual(1 - OFFLINE_CRIT_VARIANCE - 1e-9)
       expect(ratio).toBeLessThanOrEqual(1 + OFFLINE_CRIT_VARIANCE + 1e-9)
     }
+  })
+})
+
+/**
+ * Mirrors offlinePowerCoreGain's own claimed math step-by-step using the
+ * real, already-tested firePowerCoreGenerators (per-cell period, mutates
+ * coreProgress for real) plus a constant expected-value Power Core Chance
+ * term (no rng - offlinePowerCoreGain never rolls dice for power cores,
+ * unlike the ±variance roll energy gets), then routes both through the same
+ * recalculate() leech-stealing pass real gameplay uses. An independent check
+ * of the same per-cell floor-division math applyOfflineProgress relies on.
+ */
+function manualPowerCoreExpectedSimulate(state: GameState, N: number): void {
+  const chance = powerCoreChanceFor(state)
+  const amount = powerCoreAmountFor(state)
+  const chanceAmounts = state.cells.map((c) =>
+    c.type === 'basic' || c.type === 'leech' ? new Decimal(chance).times(amount) : new Decimal(0),
+  )
+  for (let i = 0; i < N; i++) {
+    const genAmounts = firePowerCoreGenerators(state)
+    const result = recalculate(state, undefined, genAmounts, chanceAmounts)
+    state.powerCores = state.powerCores.plus(result.powerCoreProduction)
+  }
+}
+
+function expectPowerCoresMatchManualSimulation(offlineState: GameState, manualState: GameState): void {
+  expect(offlineState.powerCores.toString()).toBe(manualState.powerCores.toString())
+  for (let i = 0; i < offlineState.cells.length; i++) {
+    expect(offlineState.cells[i].coreProgress).toBe(manualState.cells[i].coreProgress)
+  }
+}
+
+/**
+ * Two Power Core Generators at different levels (different periods) and
+ * out-of-phase starting progress, plus a nearby orthogonal Leech and a
+ * whole-board Leech (both also eligible for their own independent Power
+ * Core Chance rolls) - deliberately no Basic/energy production on this
+ * board, so currentRunEnergyEarned never crosses a power-core-exponent
+ * threshold and checkPowerCoreExponents (called at the end of
+ * applyOfflineProgress) can't award extra cores that would make this
+ * comparison spuriously fail.
+ */
+function buildPowerCoreBoard(): GameState {
+  const state = makeGameState(5, 5)
+  place(state, 0, 0, 'powerCoreGenerator', 0) // period 10
+  place(state, 4, 4, 'powerCoreGenerator', 3) // period 7
+  state.cells[cellIndex(4, 4, 5)].coreProgress = 4 // not phase-aligned with tick 0
+  place(state, 1, 0, 'leech', 0) // orthogonal - reads (0,0)'s procs
+  place(state, 2, 2, 'leech', 2) // whole board - reads both generators
+  state.powerCoreUpgrades.powerCoreChance = 5 // nonzero constant-rate term (2.5%)
+  return state
+}
+
+describe('offlinePowerCoreGain (via applyOfflineProgress)', () => {
+  it('regression: closed-form power core gain matches an expected-value manual simulation exactly, for N = 1, 4, 6, 7, 100, 1000', () => {
+    for (const N of [1, 4, 6, 7, 100, 1000]) {
+      const offlineState = buildPowerCoreBoard()
+      const manualState = cloneState(offlineState)
+
+      applyOfflineProgress(offlineState, N, NEUTRAL_RNG)
+      manualPowerCoreExpectedSimulate(manualState, N)
+
+      expectPowerCoresMatchManualSimulation(offlineState, manualState)
+    }
+  })
+
+  it('also matches manual simulation starting from non-phase-aligned coreProgress on every generator', () => {
+    for (const N of [1, 3, 6, 7, 23, 100]) {
+      const base = buildPowerCoreBoard()
+      for (let i = 0; i < 3; i++) firePowerCoreGenerators(base) // desync coreProgress from a fresh start
+
+      const offlineState = cloneState(base)
+      const manualState = cloneState(base)
+
+      applyOfflineProgress(offlineState, N, NEUTRAL_RNG)
+      manualPowerCoreExpectedSimulate(manualState, N)
+
+      expectPowerCoresMatchManualSimulation(offlineState, manualState)
+    }
+  })
+
+  it('an empty board gains no power cores but still returns a well-formed result', () => {
+    const state = makeGameState(3, 3)
+    const result = applyOfflineProgress(state, 50, NEUTRAL_RNG)
+    expect(result.powerCoresGained.toString()).toBe('0')
   })
 })
 

@@ -1,21 +1,23 @@
 import Decimal from 'break_infinity.js'
 import { makeGameState, cellIndex } from './game/types'
-import type { GameState, TickResult, UpgradeId } from './game/types'
-import { recalculate, tick, rotateBuffFacing } from './game/engine'
+import type { GameState, TickResult, UpgradeId, PowerCoreUpgradeId } from './game/types'
+import { recalculate, tick, rotateBuffFacing, expectedCritMultipliers } from './game/engine'
 import { GRID_W, GRID_H, MAX_CATCHUP_TICKS, STARTING_CURRENCY } from './game/config'
-import { placeCell, upgradeCell, removeCell, canAffordPlacement, type BuildableType } from './game/economy'
+import { placeCell, upgradeCell, removeCell, canAffordPlacement, healGridSize, type BuildableType } from './game/economy'
 import { buyUpgrade, effectiveTickMs } from './game/upgrades'
+import { buyPowerCoreUpgrade } from './game/powerCoreUpgrades'
 import { saveToLocalStorage, loadFromLocalStorage } from './game/save'
 import { computeOfflineTicks, applyOfflineProgress } from './game/offline'
 import { format } from './game/format'
 import { loadSettings, saveSettings, applyTheme, type Settings } from './game/settings'
-import { updateHighestValues, checkAchievements } from './game/stats'
+import { updateHighestValues, checkAchievements, checkPowerCoreExponents } from './game/stats'
 import { createGrid, type GridHandle, type GridSelection } from './ui/grid'
 import { createAppHeader } from './ui/appHeader'
 import { createCurrencyHeader } from './ui/currencyHeader'
 import { createTabShell } from './ui/tabShell'
 import { createPanel } from './ui/panel'
 import { createUpgradesPanel } from './ui/upgradesPanel'
+import { createPowerCoreUpgradesPanel } from './ui/powerCoreUpgradesPanel'
 import { createStatsPanel } from './ui/statsPanel'
 import { createAchievementsPanel } from './ui/achievementsPanel'
 import { createPlaceholderPanel } from './ui/placeholderPanel'
@@ -74,21 +76,52 @@ panelContainer.append(boundedShell)
 
 const currencyHeaderHandle = createCurrencyHeader(currencyHeaderContainer)
 
-const tabShellHandle = createTabShell(tabShellContainer, [
-  { id: 'build', label: 'Build' },
-  { id: 'upgrades', label: 'Upgrades' },
-  { id: 'gems', label: 'Gems' },
-  { id: 'prestige', label: 'Prestige' },
-  { id: 'achievements', label: 'Achievements' },
-  { id: 'stats', label: 'Stats' },
-])
+const tabShellHandle = createTabShell(
+  tabShellContainer,
+  [
+    { id: 'build', label: 'Build' },
+    { id: 'upgrades', label: 'Upgrades' },
+    { id: 'powerCores', label: 'Power Cores' },
+    { id: 'prestige', label: 'Prestige' },
+    { id: 'achievements', label: 'Achievements' },
+    { id: 'stats', label: 'Stats' },
+  ],
+  (id) => {
+    // Bug fix: switching to any tab other than Build deselects whatever's
+    // selected on the grid and disarms any build type - both are
+    // Build-tab-specific concepts that would otherwise sit stale/hidden on
+    // a different tab. Also fires on the initial construction-time
+    // activation (always 'build', the default tab) and on
+    // handleCellClick's own programmatic switch *to* 'build' below - both
+    // are no-ops here since neither ever needs anything cleared.
+    if (id !== 'build' && (buildType !== null || selected !== null)) {
+      buildType = null
+      selected = null
+      render()
+    }
+  },
+)
 
 function render(): void {
   const canPlaceCurrent = buildType !== null && canAffordPlacement(state, buildType)
-  gridHandle.update(state, lastResult, selected, canPlaceCurrent, settings.numberFormat)
+  // Two stable (non-random) snapshots, recomputed fresh every render instead
+  // of reused from the live per-tick `lastResult` - crit is a coin flip each
+  // tick, so a per-cell display sourced straight from `lastResult` visibly
+  // jumps around every time one fires then falls back the next tick. Neither
+  // of these carries that: `displayNoCrit` is the honest baseline (no crit
+  // at all - recalculate()'s default), `displayWithCrit` bakes in crit's
+  // long-run EXPECTED contribution (expectedCritMultipliers - a constant
+  // scalar per Basic, not a roll) instead of one tick's real outcome. Cheap
+  // even at 60fps: two more two-pass board evaluations, same cost class as
+  // the recalculate() calls already sprinkled through the click handlers
+  // below for "refresh immediately, don't wait for next tick".
+  const displayNoCrit = recalculate(state)
+  const displayWithCrit = recalculate(state, expectedCritMultipliers(state))
+  gridHandle.update(state, lastResult, displayNoCrit, selected, canPlaceCurrent, settings.numberFormat)
   currencyHeaderHandle.update(state, lastResult, settings.numberFormat)
-  panelHandle.update(state, lastResult, buildType, selected, settings.numberFormat)
+  panelHandle.update(state, displayNoCrit, displayWithCrit, buildType, selected, settings.numberFormat)
   upgradesPanelHandle.update(state, settings.numberFormat)
+  powerCoreUpgradesPanelHandle.update(state, settings.numberFormat)
   statsPanelHandle.update(state, lastResult, settings.numberFormat)
   achievementsPanelHandle.update(state, settings.numberFormat)
   savePanelHandle.update(state)
@@ -118,19 +151,23 @@ function handleCellClick(x: number, y: number): void {
       lastResult = recalculate(state) // refresh values immediately, don't wait for next tick
     }
   } else if (cell.type === 'buffV1') {
-    // Clicking a Buff V1 always rotates what it targets, one step per click
-    // (per its level - see engine.ts nextFacing), in addition to
-    // (re)selecting it - so it can't use "click again to deselect" (that
-    // click is already spoken for). Right-click / click off the grid still
-    // deselect it.
-    rotateBuffFacing(state, x, y)
+    const alreadySelected = selected !== null && selected.x === x && selected.y === y
+    // Only rotate if this Buff V1 was already selected - the very first
+    // click that selects it just selects (so the Upgrade menu is reachable
+    // without immediately spinning the facing you hadn't even seen yet).
+    // A second click while already selected rotates - can't use "click
+    // again to deselect" for buffs, that click is already spoken for (see
+    // engine.ts nextFacing). Right-click / click off the grid still deselects.
+    if (alreadySelected) rotateBuffFacing(state, x, y)
     selected = { x, y }
     buildType = null // inspecting a cell exits placement mode - can't have both armed at once
+    tabShellHandle.activateTab('build') // selecting a generator always brings its detail/upgrade view into view
   } else if (selected && selected.x === x && selected.y === y) {
     selected = null // click the already-selected cell again to deselect it
   } else {
     selected = { x, y }
     buildType = null // inspecting a cell exits placement mode - can't have both armed at once
+    tabShellHandle.activateTab('build') // selecting a generator always brings its detail/upgrade view into view
   }
   render()
 }
@@ -169,19 +206,37 @@ function handleBuyUpgrade(id: UpgradeId, count: number): void {
   render()
 }
 
+function handleBuyPowerCoreUpgrade(id: PowerCoreUpgradeId, count: number): void {
+  const widthBefore = state.width
+  const heightBefore = state.height
+  if (buyPowerCoreUpgrade(state, id, count)) {
+    lastResult = recalculate(state)
+    // Power Core's own Grid Size upgrade can also trigger a resize (see
+    // powerCoreUpgrades.ts buyPowerCoreUpgrade - same side effect as
+    // energy's, just against the combined total) - same rebuild as above.
+    if (state.width !== widthBefore || state.height !== heightBefore) {
+      gridHandle = createGrid(gridContainer, state.width, state.height, handleCellClick)
+    }
+  }
+  render()
+}
+
 // Swaps in a fully-formed GameState (fresh or loaded) and rebuilds whatever
 // UI depends on its dimensions. The one place that "starts" or "replaces"
-// the game. Also the one place that keeps highestValue/highestBuffLevel and
-// unlockedAchievements self-consistent with the board it's handed - cheap
-// for a fresh board, and what makes a migrated save's backfilled '0's heal
-// immediately instead of sitting wrong until the next board change.
+// the game. Also the one place that keeps highestValue/highestBuffLevel,
+// unlockedAchievements, and power core exponent awards self-consistent with
+// the board/stats it's handed - cheap for a fresh board, and what makes a
+// migrated save's backfilled values heal immediately instead of sitting
+// wrong until the next board change.
 function useGameState(newState: GameState): void {
   state = newState
   buildType = null
   selected = null
+  healGridSize(state) // self-heal for the Grid Size rebalance - see economy.ts; a no-op for an already-compliant board
   lastResult = recalculate(state)
   updateHighestValues(state, lastResult)
   checkAchievements(state)
+  checkPowerCoreExponents(state)
 
   gridHandle = createGrid(gridContainer, state.width, state.height, handleCellClick) // clears/rebuilds gridContainer itself
   render()
@@ -210,8 +265,10 @@ function applyOfflineCatchUp(loaded: GameState): GameState {
   const ticks = computeOfflineTicks(loaded.lastSaved, tickMs)
   if (ticks > 0) {
     const result = applyOfflineProgress(loaded, ticks)
-    if (result.currencyGained.gt(0)) {
-      showOfflineBanner(`Welcome back! Earned ${format(result.currencyGained, settings.numberFormat)} while away (${ticks} ticks).`)
+    if (result.currencyGained.gt(0) || result.powerCoresGained.gt(0)) {
+      const energyPart = `${format(result.currencyGained, settings.numberFormat)} energy`
+      const powerCorePart = result.powerCoresGained.gt(0) ? ` and ${format(result.powerCoresGained, settings.numberFormat)} power cores` : ''
+      showOfflineBanner(`Welcome back! Earned ${energyPart}${powerCorePart} while away (${ticks} ticks).`)
     }
     saveToLocalStorage(loaded)
   }
@@ -229,10 +286,10 @@ const panelHandle = createPanel(
   handleRemove,
 )
 const upgradesPanelHandle = createUpgradesPanel(tabShellHandle.contentContainer('upgrades'), handleBuyUpgrade)
+const powerCoreUpgradesPanelHandle = createPowerCoreUpgradesPanel(tabShellHandle.contentContainer('powerCores'), handleBuyPowerCoreUpgrade)
 createPlaceholderPanel(tabShellHandle.contentContainer('prestige'), 'Prestige')
 const statsPanelHandle = createStatsPanel(tabShellHandle.contentContainer('stats'))
 const achievementsPanelHandle = createAchievementsPanel(tabShellHandle.contentContainer('achievements'))
-createPlaceholderPanel(tabShellHandle.contentContainer('gems'), 'Gems')
 
 const settingsPanelHandle = createSettingsPanel(settingsContainer, settings, (newSettings) => {
   settings = newSettings
@@ -350,6 +407,7 @@ function frame(now: number): void {
   if (iterations > 0) {
     updateHighestValues(state, lastResult)
     checkAchievements(state)
+    checkPowerCoreExponents(state)
   }
 
   render()

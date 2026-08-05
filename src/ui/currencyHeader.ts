@@ -6,7 +6,7 @@ export interface CurrencyHeaderHandle {
   update(state: GameState, result: TickResult, formatMode: NumberFormatMode): void
 }
 
-/** Currency + production, always visible above the tab strip regardless of which tab is active. */
+/** Energy + production + Power Cores, always visible above the tab strip regardless of which tab is active. */
 export function createCurrencyHeader(container: HTMLElement): CurrencyHeaderHandle {
   container.classList.add('panel-stats')
 
@@ -14,11 +14,14 @@ export function createCurrencyHeader(container: HTMLElement): CurrencyHeaderHand
   currencyEl.className = 'panel-currency'
   const productionEl = document.createElement('div')
   productionEl.className = 'panel-production'
-  container.append(currencyEl, productionEl)
+  const powerCoresEl = document.createElement('div')
+  powerCoresEl.className = 'panel-power-cores'
+  container.append(currencyEl, productionEl, powerCoresEl)
 
   function update(state: GameState, result: TickResult, formatMode: NumberFormatMode): void {
-    currencyEl.textContent = `Currency: ${format(state.currency, formatMode)}`
+    currencyEl.textContent = `Energy: ${format(state.currency, formatMode)}`
     productionEl.textContent = `Production: ${format(result.production, formatMode)} / s`
+    powerCoresEl.textContent = `Power Cores: ${format(state.powerCores, formatMode)}`
   }
 
   return { update }

@@ -9,6 +9,35 @@ import {
   ACHIEVEMENT_HIGHEST_LEECH,
   ACHIEVEMENT_BUFF_LEVEL,
 } from './config'
+import { powerCoreReductionFraction, powerCoreAmountFor } from './upgrades'
+
+/**
+ * The n-th (0-indexed) energy threshold that awards a power core: n=0 is
+ * 100 (10^2), n=1 is 1000 (10^3), and so on - reduced by the Power Core
+ * Reduction upgrade, uniformly across every tier.
+ */
+export function powerCoreThresholdFor(n: number, state: GameState): Decimal {
+  return Decimal.pow(10, n + 2).times(1 - powerCoreReductionFraction(state))
+}
+
+/**
+ * Awards a power core for every 10^n energy threshold currentRunEnergyEarned
+ * has newly crossed (a bounded while-loop, not a closed-form jump - unlike
+ * ticks or buff firings, which can number in the millions, crossing several
+ * exponents in one jump is realistically always a handful at most, even from
+ * a big offline catch-up), and updates bestRunEnergyEarned. Idempotent, same
+ * pattern as checkAchievements - safe to call after every tick or offline
+ * catch-up.
+ */
+export function checkPowerCoreExponents(state: GameState): void {
+  while (state.currentRunEnergyEarned.gte(powerCoreThresholdFor(state.powerCoreExponentsAwarded, state))) {
+    state.powerCores = state.powerCores.plus(powerCoreAmountFor(state))
+    state.powerCoreExponentsAwarded += 1
+  }
+  if (state.currentRunEnergyEarned.gt(state.bestRunEnergyEarned)) {
+    state.bestRunEnergyEarned = state.currentRunEnergyEarned
+  }
+}
 
 /**
  * Scans the board's current final values and bumps the running "highest

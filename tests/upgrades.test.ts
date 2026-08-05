@@ -16,7 +16,13 @@ import {
   refundFraction,
   effectiveTickMs,
   gridSizeForLevel,
+  totalGridSizeLevel,
+  powerCoreChanceFor,
+  powerCoreAmountFor,
+  powerCoreReductionFraction,
+  isPowerCoreGeneratorUnlocked,
 } from '../src/game/upgrades'
+import { buyPowerCoreUpgrade, pcMaxLevelFor } from '../src/game/powerCoreUpgrades'
 import {
   CRIT_BASE_CHANCE,
   CRIT_BASE_AMOUNT,
@@ -33,6 +39,17 @@ import {
   GRID_W,
   GRID_H,
   GRID_SIZE_PER_LEVEL,
+  PC_TICK_SPEED_PCT_PER_LEVEL,
+  PC_BASIC_VALUE_PER_LEVEL,
+  PC_CRIT_CHANCE_PER_LEVEL,
+  PC_CRIT_AMOUNT_PCT_PER_LEVEL,
+  POWER_CORE_CHANCE_BASE,
+  POWER_CORE_CHANCE_PER_LEVEL,
+  POWER_CORE_AMOUNT_BASE,
+  POWER_CORE_AMOUNT_PER_LEVEL,
+  POWER_CORE_REDUCTION_PER_LEVEL,
+  PC_GRID_SIZE_PER_LEVEL,
+  MAX_GRID_SIZE,
 } from '../src/game/config'
 
 // Brute-force sum, one level at a time - the thing bulkUpgradeCost's closed
@@ -126,7 +143,7 @@ describe('buyUpgrade', () => {
   })
 
   it('buying gridSize levels grows the board to match, on top of the normal level/cost bookkeeping', () => {
-    const state = makeGameState(GRID_W, GRID_H) // starting 3x3
+    const state = makeGameState(GRID_W, GRID_H) // starting 4x4
     state.currency = new Decimal(1e30)
 
     expect(buyUpgrade(state, 'gridSize', 2)).toBe(true)
@@ -134,16 +151,16 @@ describe('buyUpgrade', () => {
     expect(state.width).toBe(gridSizeForLevel(2))
     expect(state.height).toBe(gridSizeForLevel(2))
 
-    expect(buyUpgrade(state, 'gridSize', 3)).toBe(true) // up to the max (5)
-    expect(state.upgrades.gridSize).toBe(5)
-    expect(state.width).toBe(gridSizeForLevel(5))
-    expect(gridSizeForLevel(5)).toBe(8) // 3x3 -> 8x8 at max, matching the old fixed default
+    expect(buyUpgrade(state, 'gridSize', 1)).toBe(true) // up to the max (3)
+    expect(state.upgrades.gridSize).toBe(3)
+    expect(state.width).toBe(gridSizeForLevel(3))
+    expect(gridSizeForLevel(3)).toBe(7) // 4x4 -> 7x7 at this track's max alone (10x10 needs Power Core's track too)
   })
 
   it("buying gridSize never shrinks a board that's already bigger than the target (e.g. a migrated save)", () => {
-    const state = makeGameState(8, 8) // already at what gridSize level 5 would target
+    const state = makeGameState(8, 8) // already bigger than what a low gridSize level would target
     state.currency = new Decimal(1e30)
-    expect(buyUpgrade(state, 'gridSize', 1)).toBe(true) // targets gridSizeForLevel(1) = 4x4
+    expect(buyUpgrade(state, 'gridSize', 1)).toBe(true) // targets gridSizeForLevel(1) = 5x5
     expect(state.width).toBe(8) // unchanged - resizeGrid() never shrinks
     expect(state.height).toBe(8)
   })
@@ -199,5 +216,97 @@ describe('effect accessors', () => {
 
     state.upgrades.tickSpeed = 25
     expect(effectiveTickMs(state)).toBe(TICK_MS - 25 * TICK_SPEED_MS_PER_LEVEL)
+  })
+})
+
+describe('combined energy + power core stacking', () => {
+  it('effectiveTickMs: the two Tick Speed tracks stack multiplicatively, not additively', () => {
+    const state = makeGameState(1, 1)
+    state.upgrades.tickSpeed = 25 // energy: max, -25%
+    state.powerCoreUpgrades.tickSpeed = 25 // power core: max, -25%
+
+    const expected = TICK_MS * (1 - 25 * (TICK_SPEED_MS_PER_LEVEL / TICK_MS)) * (1 - 25 * PC_TICK_SPEED_PCT_PER_LEVEL)
+    expect(effectiveTickMs(state)).toBeCloseTo(expected, 9)
+    // Multiplicative means it's strictly less reduction than naive additive
+    // stacking would give (0.75 * 0.75 = 0.5625, not 0.5) - confirms it
+    // can never reach or cross zero, however many reductions stack on top.
+    expect(effectiveTickMs(state)).toBeGreaterThan(TICK_MS * 0.5)
+    expect(effectiveTickMs(state)).toBeCloseTo(TICK_MS * 0.5625, 6)
+  })
+
+  it('critChanceFor: energy and power core Crit Chance both add on top of the base + per-cell-level bonus', () => {
+    const state = makeGameState(1, 1)
+    state.upgrades.critChance = 25 // max
+    state.powerCoreUpgrades.critChance = 25 // max
+
+    const expected =
+      CRIT_BASE_CHANCE +
+      BASIC_CRIT_CHANCE_PER_LEVEL * 5 +
+      CRIT_CHANCE_UPGRADE_PER_LEVEL * 25 +
+      PC_CRIT_CHANCE_PER_LEVEL * 25
+    expect(critChanceFor(state, 5)).toBeCloseTo(expected, 12)
+    // Never exceeds 100% at max levels (confirmed acceptable with the user - 60%).
+    expect(critChanceFor(state, 5)).toBeLessThan(1)
+  })
+
+  it('critAmountFor: power core Crit Amount is multiplicative on top of the energy+level amount', () => {
+    const state = makeGameState(1, 1)
+    state.upgrades.critAmount = 10 // max
+    state.powerCoreUpgrades.critAmount = 25 // max
+
+    const globalAmount = CRIT_BASE_AMOUNT + 10 * CRIT_AMOUNT_UPGRADE_PER_LEVEL
+    const pcMultiplier = 1 + 25 * PC_CRIT_AMOUNT_PCT_PER_LEVEL
+    const expected = globalAmount * BASIC_CRIT_AMOUNT_MULT[5] * pcMultiplier
+    expect(critAmountFor(state, 5)).toBeCloseTo(expected, 9)
+  })
+
+  it('basicValueBonus: energy and power core Basic Generator Value add together', () => {
+    const state = makeGameState(1, 1)
+    state.upgrades.basicValue = 100
+    state.powerCoreUpgrades.basicValue = 50
+    expect(basicValueBonus(state)).toBe(100 * BASIC_VALUE_PER_LEVEL + 50 * PC_BASIC_VALUE_PER_LEVEL)
+  })
+
+  it('totalGridSizeLevel adds both tracks, and buying either one resizes the board to the combined total', () => {
+    const state = makeGameState(GRID_W, GRID_H)
+    state.currency = new Decimal(1e30)
+    state.powerCores = new Decimal(1e9)
+
+    expect(totalGridSizeLevel(state)).toBe(0)
+    buyUpgrade(state, 'gridSize', 2) // energy: level 2
+    expect(totalGridSizeLevel(state)).toBe(2)
+    expect(state.width).toBe(gridSizeForLevel(2))
+
+    buyPowerCoreUpgrade(state, 'gridSize', 3) // power core: level 3, combined 5
+    expect(totalGridSizeLevel(state)).toBe(5)
+    expect(state.width).toBe(gridSizeForLevel(5))
+    expect(state.height).toBe(gridSizeForLevel(5))
+  })
+
+  it('powerCoreChanceFor/powerCoreAmountFor/powerCoreReductionFraction read purely off the power core track, capped where documented', () => {
+    const state = makeGameState(1, 1)
+    expect(powerCoreChanceFor(state)).toBe(POWER_CORE_CHANCE_BASE)
+    expect(powerCoreAmountFor(state)).toBe(POWER_CORE_AMOUNT_BASE)
+    expect(powerCoreReductionFraction(state)).toBe(0)
+
+    state.powerCoreUpgrades.powerCoreChance = 25 // max
+    state.powerCoreUpgrades.powerCoreAmount = 99 // max
+    state.powerCoreUpgrades.powerCoreReduction = 25 // max
+    expect(powerCoreChanceFor(state)).toBeCloseTo(POWER_CORE_CHANCE_BASE + 25 * POWER_CORE_CHANCE_PER_LEVEL, 12)
+    expect(powerCoreAmountFor(state)).toBe(POWER_CORE_AMOUNT_BASE + 99 * POWER_CORE_AMOUNT_PER_LEVEL)
+    expect(powerCoreReductionFraction(state)).toBeCloseTo(25 * POWER_CORE_REDUCTION_PER_LEVEL, 12) // 25%, capped at 1
+  })
+
+  it('isPowerCoreGeneratorUnlocked flips only once the one-shot unlock upgrade is bought', () => {
+    const state = makeGameState(1, 1)
+    state.powerCores = new Decimal(1e9)
+    expect(isPowerCoreGeneratorUnlocked(state)).toBe(false)
+    buyPowerCoreUpgrade(state, 'unlockPowerCoreGenerator', 1)
+    expect(isPowerCoreGeneratorUnlocked(state)).toBe(true)
+  })
+
+  it('MAX_GRID_SIZE matches what both Grid Size tracks maxed out actually add up to - the number economy.ts healGridSize shrinks legacy oversized boards down to', () => {
+    const maxCombinedLevel = maxLevelFor('gridSize') + pcMaxLevelFor('gridSize') * PC_GRID_SIZE_PER_LEVEL
+    expect(gridSizeForLevel(maxCombinedLevel)).toBe(MAX_GRID_SIZE)
   })
 })
