@@ -1,0 +1,715 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  --basic-color: #3a8f3a;
+  --leech-color: #b53a3a;
+  --buff-color: #b5943a;
+  /* Shared between each cell-<type>'s background, its own border (so the
+     grey/white grid border doesn't cut across a generator cell), and - for
+     buff - the facing-arrow tab, so they're all pixel-identical. */
+  --basic-cell-bg: color-mix(in srgb, canvas, var(--basic-color) 35%);
+  --leech-cell-bg: color-mix(in srgb, canvas, var(--leech-color) 35%);
+  --buff-cell-bg: color-mix(in srgb, canvas, var(--buff-color) 35%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.offline-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 0.6rem 1rem;
+  background: color-mix(in srgb, canvas, #4a9eff 15%);
+  border-bottom: 1px solid #4a9eff88;
+  font-size: 0.9rem;
+}
+
+.offline-banner-close {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.25rem;
+}
+
+.offline-banner-close:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+}
+
+body {
+  margin: 0;
+  padding: 1rem;
+}
+
+.app {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  align-items: flex-start;
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(var(--grid-w), 1fr);
+  grid-template-rows: repeat(var(--grid-h), 1fr);
+  gap: 6px;
+  width: min(600px, 90vw);
+  aspect-ratio: var(--grid-w) / var(--grid-h);
+  flex: 0 0 auto;
+}
+
+.cell {
+  position: relative; /* anchor point for the buff facing-arrow tab */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid #8888;
+  border-radius: 6px;
+  background: canvas;
+  color: canvastext;
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1.1;
+  cursor: pointer;
+}
+
+.cell-empty:hover {
+  border-color: #888;
+}
+
+.cell:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: -2px;
+  z-index: 1;
+}
+
+.cell-empty {
+  background: color-mix(in srgb, canvas, canvastext 4%);
+}
+
+/* Border colour matches each generator's own fill, so the default grey/white
+   grid border doesn't cut across an occupied cell - only empty cells keep
+   the plain grid-line border. */
+.cell-basic {
+  background: var(--basic-cell-bg);
+  border-color: var(--basic-cell-bg);
+}
+
+.cell-leech {
+  background: var(--leech-cell-bg);
+  border-color: var(--leech-cell-bg);
+}
+
+.cell-buff {
+  background: var(--buff-cell-bg);
+  border-color: var(--buff-cell-bg);
+}
+
+.cell-selected {
+  outline: 3px solid #4a9eff;
+  outline-offset: -3px;
+}
+
+.cell-unaffordable {
+  opacity: 0.55;
+}
+
+.cell-glyph {
+  font-weight: 700;
+}
+
+.cell-value {
+  font-size: 0.65rem;
+  opacity: 0.85;
+}
+
+/* A triangle tab attached to whichever edge of the cell the Buff currently
+   targets - moves to a different edge on rotation. Same fill colour as the
+   cell itself (--buff-cell-bg), and sized as a fraction of the cell's own
+   dimensions (not fixed px) so it scales across grid sizes. Its flat base
+   sits flush against the cell's actual visible border - not just its
+   padding edge - so it reads as one continuous attached shape.
+   Base width (how prominent it reads) and protrusion depth (how far it
+   pokes out) are independent: base stays generous, protrusion stays short,
+   so it looks attached rather than sticking far out.
+   Shape comes from clip-path: a box positioned outside the relevant edge,
+   with a triangular corner cut via percentage points, base flush against
+   the cell, apex pointing outward. */
+.cell-facing-arrow {
+  position: absolute;
+  background: var(--buff-cell-bg);
+  pointer-events: none;
+  /* Above sibling cells regardless of DOM order, since it protrudes past
+     the 2px grid gap and would otherwise be painted over by whichever
+     neighbour cell comes later in the DOM. */
+  z-index: 2;
+}
+
+/* The +1px/-1px used to exactly compensate for the cell's border width and
+   land flush - in practice, mixing percentage positioning with the grid's
+   fractional (1fr) cell sizes leaves a hairline sub-pixel gap at that exact
+   alignment. Deliberately overlapping by 2px instead (same fill colour, so
+   the overlap itself is invisible) guarantees no seam regardless of
+   rounding, where an exact flush edge can't. */
+.cell-facing-arrow.facing-up {
+  left: 37.5%;
+  width: 25%; /* base width */
+  height: 18%; /* protrusion depth */
+  top: calc(-18% + 1px);
+  clip-path: polygon(0 100%, 100% 100%, 50% 0);
+}
+
+.cell-facing-arrow.facing-down {
+  left: 37.5%;
+  width: 25%;
+  height: 18%;
+  top: calc(100% - 1px);
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
+}
+
+.cell-facing-arrow.facing-left {
+  top: 37.5%;
+  height: 25%; /* base width */
+  width: 18%; /* protrusion depth */
+  left: calc(-18% + 1px);
+  clip-path: polygon(100% 0, 100% 100%, 0 50%);
+}
+
+.cell-facing-arrow.facing-right {
+  top: 37.5%;
+  height: 25%;
+  width: 18%;
+  left: calc(100% - 1px);
+  clip-path: polygon(0 0, 0 100%, 100% 50%);
+}
+
+.panel {
+  flex: 1 1 220px;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.panel-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.panel-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.panel-currency {
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.panel-production {
+  font-size: 1rem;
+  opacity: 0.85;
+}
+
+.panel-section h2 {
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+  margin: 0 0 0.5rem;
+}
+
+.build-buttons {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.build-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: canvastext;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* Icon reuses the same cell-<type> background classes as the grid, so the
+   build picker literally matches the colours already on the board. */
+.build-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border: 1px solid #8886;
+  border-radius: 4px;
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+.build-name {
+  font-size: 0.75rem;
+}
+
+.build-cost {
+  font-size: 0.7rem;
+  opacity: 0.75;
+}
+
+.build-button:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+}
+
+.build-button-active {
+  border-color: #4a9eff;
+  background: color-mix(in srgb, canvas, #4a9eff 12%);
+}
+
+.build-button-active .build-icon {
+  outline: 2px solid #4a9eff;
+  outline-offset: 1px;
+}
+
+.build-button:disabled,
+.upgrade-button:disabled,
+.remove-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.detail-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.upgrade-button,
+.remove-button {
+  padding: 0.5rem 0.9rem;
+  border: 1px solid #8888;
+  background: canvas;
+  color: canvastext;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* Reuses the leech accent color as a "destructive action" tint - distinct
+   from Upgrade without introducing a whole new color to the palette. */
+.remove-button {
+  border-color: color-mix(in srgb, canvastext, var(--leech-color) 50%);
+  color: color-mix(in srgb, canvastext, var(--leech-color) 50%);
+}
+
+.upgrade-button:focus-visible,
+.remove-button:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+}
+
+.panel-hint {
+  font-size: 0.85rem;
+  opacity: 0.75;
+  margin: 0;
+}
+
+.panel-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+}
+
+.panel-next-level {
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px dashed #8886;
+  font-size: 0.8rem;
+  font-style: italic;
+  opacity: 0.75;
+}
+
+/* --- Tab shell: vertical strip + one content area, exactly one tab visible. --- */
+
+.tab-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.tab-strip {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+  border-bottom: 1px solid #8886;
+  padding-bottom: 0.5rem;
+}
+
+.tab-button {
+  padding: 0.4rem 0.7rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: canvastext;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.tab-button:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+}
+
+.tab-button-active {
+  border-color: #4a9eff;
+  background: color-mix(in srgb, canvas, #4a9eff 12%);
+  font-weight: 600;
+}
+
+.tab-content-area {
+  min-height: 12rem;
+}
+
+.placeholder-text {
+  opacity: 0.6;
+  font-style: italic;
+}
+
+/* --- Stats tab --- */
+
+.stats-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+}
+
+.stats-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.stats-label {
+  opacity: 0.75;
+}
+
+.stats-value {
+  font-weight: 600;
+  text-align: right;
+}
+
+/* --- Achievements tab --- */
+
+.achievement-category {
+  margin-bottom: 1rem;
+}
+
+.achievement-category h3 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.65;
+  margin: 0 0 0.4rem;
+}
+
+.achievement-tier-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.achievement-tier {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  opacity: 0.5;
+}
+
+.achievement-tier.achievement-unlocked {
+  opacity: 1;
+}
+
+.achievement-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  flex: 0 0 auto;
+  border: 1px solid #8888;
+  border-radius: 3px;
+  font-size: 0.75rem;
+  color: #3a8f3a;
+}
+
+.achievement-tier.achievement-unlocked .achievement-check {
+  border-color: #3a8f3a;
+  background: color-mix(in srgb, canvas, #3a8f3a 20%);
+}
+
+.achievement-label {
+  flex: 1 1 auto;
+}
+
+.achievement-progress {
+  font-size: 0.75rem;
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
+/* --- Settings icon + popover, inline next to currency, in the panel's own
+   header row. .settings-wrapper is the positioning anchor for the popover. --- */
+
+.settings-wrapper {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.settings-toggle {
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 1px solid #8888;
+  border-radius: 50%;
+  background: canvas;
+  color: canvastext;
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
+.settings-toggle:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+}
+
+.settings-popover {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  z-index: 10;
+  width: 16rem;
+  padding: 1rem;
+  border: 1px solid #8888;
+  border-radius: 8px;
+  background: canvas;
+  color: canvastext;
+  box-shadow: 0 4px 16px #00000022;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.settings-save-section {
+  margin-top: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #8886;
+}
+
+.settings-about {
+  margin-top: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #8886;
+  text-align: center;
+}
+
+.settings-about h2 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+  margin: 0 0 0.3rem;
+}
+
+.settings-about-line {
+  margin: 0.15rem 0;
+  font-size: 0.7rem;
+  opacity: 0.6;
+}
+
+.settings-about-line a {
+  color: #4a9eff;
+}
+
+/* Author stylesheets override the UA's default `[hidden] { display: none }`
+   once .settings-popover sets its own `display`, so it has to be restored
+   explicitly - otherwise the popover stays interactive (and click-through-
+   blocking) even while `hidden` is set. */
+.settings-popover[hidden] {
+  display: none;
+}
+
+.settings-popover h2 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+  margin: 0 0 0.3rem;
+}
+
+.settings-label {
+  font-size: 0.8rem;
+  opacity: 0.8;
+  margin-top: 0.5rem;
+}
+
+.settings-select {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid #8888;
+  border-radius: 4px;
+  background: canvas;
+  color: canvastext;
+  font: inherit;
+}
+
+.settings-select:focus-visible,
+.settings-slider:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+}
+
+.save-status {
+  font-size: 0.8rem;
+  opacity: 0.7;
+  margin-bottom: 0.4rem;
+}
+
+.save-textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 0.5rem;
+  border: 1px solid #8888;
+  border-radius: 4px;
+  background: canvas;
+  color: canvastext;
+  font: inherit;
+  font-size: 0.75rem;
+  font-family: ui-monospace, monospace;
+}
+
+.save-textarea:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 1px;
+}
+
+.save-buttons {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.save-button {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid #8888;
+  border-radius: 4px;
+  background: canvas;
+  color: canvastext;
+  font: inherit;
+  cursor: pointer;
+}
+
+.save-button:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+}
+
+.save-message {
+  min-height: 1.2em;
+  margin: 0.4rem 0 0;
+  font-size: 0.8rem;
+  opacity: 0.8;
+}
+
+.debug-panel {
+  flex-basis: 100%;
+  margin-top: 0.5rem;
+  padding: 0.75rem 1rem;
+  border: 1px dashed #8888;
+  border-radius: 6px;
+  background: color-mix(in srgb, canvas, canvastext 3%);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.debug-panel h2 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+  margin: 0;
+}
+
+.debug-label {
+  font-size: 0.8rem;
+  opacity: 0.8;
+  display: block;
+}
+
+.debug-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.debug-slider {
+  flex: 1 1 200px;
+  min-width: 150px;
+}
+
+.debug-number {
+  width: 5rem;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid #8888;
+  background: canvas;
+  color: canvastext;
+  font: inherit;
+}
+
+.debug-select {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid #8888;
+  background: canvas;
+  color: canvastext;
+  font: inherit;
+}
+
+.debug-slider:focus-visible,
+.debug-number:focus-visible,
+.debug-select:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
