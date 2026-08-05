@@ -1,8 +1,9 @@
 import Decimal from 'break_infinity.js'
 import type { CellType, GameState } from './types'
 import { cellIndex, emptyCell } from './types'
-import { BASE_COST, COST_GROWTH, UPGRADE_COST_GROWTH, MAX_LEVEL, REMOVE_REFUND_FRACTION } from './config'
+import { BASE_COST, COST_GROWTH, UPGRADE_COST_GROWTH, MAX_LEVEL } from './config'
 import { defaultFacingFor } from './engine'
+import { refundFraction } from './upgrades'
 
 export type BuildableType = Exclude<CellType, 'empty'>
 
@@ -33,16 +34,16 @@ export function placeCell(state: GameState, x: number, y: number, type: Buildabl
   if (state.currency.lt(cost)) return false
   state.currency = state.currency.minus(cost)
   cell.type = type
-  cell.level = 1
+  cell.level = 0 // levels are 0-based: a freshly placed generator starts at level 0
   cell.placementCost = cost // stored per-cell: powers the Remove refund, since cost escalates over time
-  if (type === 'buff') cell.facing = defaultFacingFor(state, x, y)
+  if (type === 'buffV1') cell.facing = defaultFacingFor(state, x, y)
   state.totalGeneratorsBuilt += 1
   return true
 }
 
 /** Cost to upgrade a generator of this type from `currentLevel` to `currentLevel + 1`. */
 export function upgradeCost(type: BuildableType, currentLevel: number): Decimal {
-  return new Decimal(BASE_COST[type]).times(Decimal.pow(UPGRADE_COST_GROWTH, currentLevel))
+  return new Decimal(BASE_COST[type]).times(Decimal.pow(UPGRADE_COST_GROWTH[type], currentLevel))
 }
 
 export function isMaxLevel(type: BuildableType, level: number): boolean {
@@ -69,11 +70,11 @@ export function upgradeCell(state: GameState, x: number, y: number): boolean {
   return true
 }
 
-/** What removing the generator at (x, y) would refund - 0 for an empty cell. */
+/** What removing the generator at (x, y) would refund - 0 for an empty cell. Reads the account-wide Removal Refund upgrade (see upgrades.ts). */
 export function removeRefund(state: GameState, x: number, y: number): Decimal {
   const cell = state.cells[cellIndex(x, y, state.width)]
   if (cell.type === 'empty') return new Decimal(0)
-  return cell.placementCost.times(REMOVE_REFUND_FRACTION)
+  return cell.placementCost.times(refundFraction(state))
 }
 
 /**

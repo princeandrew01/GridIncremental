@@ -1,16 +1,18 @@
 import Decimal from 'break_infinity.js'
-import type { Cell, CellType, Facing, GameState } from './types'
+import type { Cell, CellType, Facing, GameState, UpgradeLevels } from './types'
+import { makeEmptyUpgradeLevels } from './types'
+import { MAX_LEVEL } from './config'
 
-export const SAVE_VERSION = 3
+export const SAVE_VERSION = 5
 
-const TYPE_TO_INDEX: Record<CellType, number> = { empty: 0, basic: 1, leech: 2, buff: 3 }
-const INDEX_TO_TYPE: CellType[] = ['empty', 'basic', 'leech', 'buff']
+const TYPE_TO_INDEX: Record<CellType, number> = { empty: 0, basic: 1, leech: 2, buffV1: 3, buffV2: 4 }
+const INDEX_TO_TYPE: CellType[] = ['empty', 'basic', 'leech', 'buffV1', 'buffV2']
 
 interface SaveCell {
   t: number // type index
   l: number // level
   b: string // buffAccum, Decimal serialised as string
-  f: Facing // facing; meaningless except on buffs, but always present - cheap and keeps the shape uniform
+  f: Facing // facing; meaningless except on buffV1, but always present - cheap and keeps the shape uniform
   p: string // placementCost, Decimal serialised as string - added in version 3, see migrate() below
 }
 
@@ -34,6 +36,10 @@ export interface SaveData {
   highestValue: { basic: string; leech: string }
   highestBuffLevel: number
   unlockedAchievements: string[]
+
+  // Added in version 4, alongside the Upgrades tab and the buff v1/v2 split -
+  // see GameState. migrate() below backfills these for older saves.
+  upgrades: UpgradeLevels
 }
 
 /** Pure: GameState -> SaveData. Never touches storage. */
@@ -61,6 +67,7 @@ export function serialize(state: GameState): SaveData {
     highestValue: { basic: state.highestValue.basic.toString(), leech: state.highestValue.leech.toString() },
     highestBuffLevel: state.highestBuffLevel,
     unlockedAchievements: state.unlockedAchievements,
+    upgrades: { ...state.upgrades },
   }
 }
 
@@ -104,6 +111,43 @@ export function migrate(save: SaveData): SaveData {
       cells: save.cells.map((c) => ({ ...c, p: c.p ?? '0' })),
     }
   }
+  if (save.version < 4) {
+    // v3 predates Alpha 0.2's rebalance: levels went from 1-based to 0-based,
+    // per-type max levels shrank (Basic 10 -> 5, Leech 3 -> 2, Buff 5 -> 2),
+    // and Buff split into buffV1/buffV2 (buffV1 keeps index 3, so an old
+    // `buff` cell already deserializes as buffV1 for free via
+    // INDEX_TO_TYPE - only the level needs rebasing). Decided with the user:
+    // clamp and carry over, not wipe or compensate - a maxed Basic loses the
+    // flat value its old levels used to grant (that growth moved into the
+    // new Basic Generator Value upgrade, which starts at 0 and can't
+    // retroactively backfill what old levels already paid for).
+    const maxLevelByIndex = [0, MAX_LEVEL.basic, MAX_LEVEL.leech, MAX_LEVEL.buffV1, MAX_LEVEL.buffV2]
+    save = {
+      ...save,
+      version: 4,
+      cells: save.cells.map((c) => ({
+        ...c,
+        l: Math.max(0, Math.min(c.l - 1, maxLevelByIndex[c.t] ?? 0)),
+      })),
+      upgrades: makeEmptyUpgradeLevels(),
+      highestBuffLevel: Math.max(0, save.highestBuffLevel - 1),
+    }
+  }
+  if (save.version < 5) {
+    // v4 predates the Grid Size upgrade - its `upgrades` object exists but
+    // is missing the `gridSize` key entirely (not just zero - genuinely
+    // absent, since the shape itself grew a new field). Merging over
+    // defaults backfills it to 0 without disturbing any level the player
+    // already bought in the other 6. The board's existing width/height carry
+    // over untouched, whatever they were - resizeGrid() only ever grows, so
+    // buying Grid Size levels later can't shrink a board that's already
+    // bigger than gridSizeForLevel(0) (3x3).
+    save = {
+      ...save,
+      version: 5,
+      upgrades: { ...makeEmptyUpgradeLevels(), ...save.upgrades },
+    }
+  }
   return save
 }
 
@@ -125,6 +169,7 @@ export function deserialize(rawSave: SaveData): GameState {
     currency: new Decimal(save.currency),
     tickCount: save.tickCount,
     lastSaved: save.lastSaved,
+    upgrades: save.upgrades ?? makeEmptyUpgradeLevels(),
     startedAt: save.startedAt,
     prestigeStartedAt: save.prestigeStartedAt,
     activePlayMs: save.activePlayMs,

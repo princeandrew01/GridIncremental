@@ -1,0 +1,30 @@
+import { chromium } from 'playwright'
+const browser = await chromium.launch()
+const context = await browser.newContext()
+
+const setupPage = await context.newPage()
+await setupPage.goto('http://localhost:5199')
+await setupPage.evaluate(() => localStorage.clear())
+await setupPage.reload()
+await setupPage.waitForTimeout(300)
+await setupPage.evaluate(() => {
+  const raw = localStorage.getItem('grid-incremental-save')
+  const save = JSON.parse(raw)
+  save.currency = '1e30'
+  save.lastSaved = Date.now()
+  localStorage.setItem('grid-incremental-save', JSON.stringify(save))
+})
+const checkOnSetupPage = await setupPage.evaluate(() => JSON.parse(localStorage.getItem('grid-incremental-save')).currency)
+console.log('currency on setupPage right after inject:', checkOnSetupPage)
+await setupPage.close()
+
+const page = await context.newPage()
+await page.goto('http://localhost:5199')
+const rawImmediately = await page.evaluate(() => localStorage.getItem('grid-incremental-save'))
+console.log('raw on new page IMMEDIATELY after goto:', rawImmediately ? JSON.parse(rawImmediately).currency : rawImmediately)
+await page.waitForTimeout(300)
+const currencyText = await page.locator('.panel-currency').textContent()
+console.log('UI currency text:', currencyText)
+const rawAfter = await page.evaluate(() => localStorage.getItem('grid-incremental-save'))
+console.log('raw AFTER 300ms:', rawAfter ? JSON.parse(rawAfter).currency : rawAfter)
+await browser.close()

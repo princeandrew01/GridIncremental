@@ -1,23 +1,25 @@
 import Decimal from 'break_infinity.js'
 import { makeGameState, cellIndex } from './game/types'
-import type { GameState, TickResult } from './game/types'
+import type { GameState, TickResult, UpgradeId } from './game/types'
 import { recalculate, tick, rotateBuffFacing } from './game/engine'
-import { TICK_MS, GRID_W, GRID_H, MAX_CATCHUP_TICKS, STARTING_CURRENCY } from './game/config'
+import { GRID_W, GRID_H, MAX_CATCHUP_TICKS, STARTING_CURRENCY } from './game/config'
 import { placeCell, upgradeCell, removeCell, canAffordPlacement, type BuildableType } from './game/economy'
+import { buyUpgrade, effectiveTickMs } from './game/upgrades'
 import { saveToLocalStorage, loadFromLocalStorage } from './game/save'
 import { computeOfflineTicks, applyOfflineProgress } from './game/offline'
 import { format } from './game/format'
 import { loadSettings, saveSettings, applyTheme, type Settings } from './game/settings'
 import { updateHighestValues, checkAchievements } from './game/stats'
 import { createGrid, type GridHandle, type GridSelection } from './ui/grid'
+import { createAppHeader } from './ui/appHeader'
 import { createCurrencyHeader } from './ui/currencyHeader'
 import { createTabShell } from './ui/tabShell'
 import { createPanel } from './ui/panel'
+import { createUpgradesPanel } from './ui/upgradesPanel'
 import { createStatsPanel } from './ui/statsPanel'
 import { createAchievementsPanel } from './ui/achievementsPanel'
 import { createPlaceholderPanel } from './ui/placeholderPanel'
 import { createSavePanel } from './ui/savePanel'
-import { createDebugPanel } from './ui/debugPanel'
 import { createSettingsPanel } from './ui/settingsPanel'
 import { createAboutSection } from './ui/aboutSection'
 import { showOfflineBanner } from './ui/offlineBanner'
@@ -40,24 +42,26 @@ let gridHandle: GridHandle
 let settings: Settings = loadSettings()
 applyTheme(settings.theme)
 
-// Debug-only, not part of GameState and never saved: effective tick length
-// is TICK_MS * tickSpeedMultiplier. 1 = normal speed, 0.1 = 10x faster.
-let tickSpeedMultiplier = 1
-
 const app = document.querySelector<HTMLDivElement>('#app')!
 app.innerHTML = ''
 app.classList.add('app')
 
+const appHeaderContainer = document.createElement('div')
+app.appendChild(appHeaderContainer)
+createAppHeader(appHeaderContainer)
+
 const gridContainer = document.createElement('div')
 const panelContainer = document.createElement('div')
-const debugContainer = document.createElement('div')
-app.append(gridContainer, panelContainer, debugContainer)
+app.append(gridContainer, panelContainer)
 panelContainer.classList.add('panel')
 
-// panelContainer's fixed internal layout: a header row (currency/production
-// on the left, the settings gear inline on the right - always visible) ->
-// tab strip -> active tab's content. Save controls live inside the settings
-// popover (see below), reachable from the same gear icon.
+// panelContainer's fixed internal layout: a bordered box (matching the debug
+// panel's own dashed-border treatment) holding a header row (currency/
+// production on the left, the settings gear inline on the right - always
+// visible) -> tab strip -> active tab's content. Save controls live inside
+// the settings popover (see below), reachable from the same gear icon.
+const boundedShell = document.createElement('div')
+boundedShell.className = 'panel-bordered'
 const headerRow = document.createElement('div')
 headerRow.className = 'panel-header-row'
 const currencyHeaderContainer = document.createElement('div')
@@ -65,7 +69,8 @@ const settingsContainer = document.createElement('div')
 headerRow.append(currencyHeaderContainer, settingsContainer)
 
 const tabShellContainer = document.createElement('div')
-panelContainer.append(headerRow, tabShellContainer)
+boundedShell.append(headerRow, tabShellContainer)
+panelContainer.append(boundedShell)
 
 const currencyHeaderHandle = createCurrencyHeader(currencyHeaderContainer)
 
@@ -83,6 +88,7 @@ function render(): void {
   gridHandle.update(state, lastResult, selected, canPlaceCurrent, settings.numberFormat)
   currencyHeaderHandle.update(state, lastResult, settings.numberFormat)
   panelHandle.update(state, lastResult, buildType, selected, settings.numberFormat)
+  upgradesPanelHandle.update(state, settings.numberFormat)
   statsPanelHandle.update(state, lastResult, settings.numberFormat)
   achievementsPanelHandle.update(state, settings.numberFormat)
   savePanelHandle.update(state)
@@ -111,11 +117,12 @@ function handleCellClick(x: number, y: number): void {
     if (buildType && placeCell(state, x, y, buildType)) {
       lastResult = recalculate(state) // refresh values immediately, don't wait for next tick
     }
-  } else if (cell.type === 'buff') {
-    // Clicking a Buff always rotates which single neighbour it targets, one
-    // step clockwise per click, in addition to (re)selecting it - so a Buff
-    // can't use "click again to deselect" (that click is already spoken
-    // for). Right-click / click off the grid still deselect it.
+  } else if (cell.type === 'buffV1') {
+    // Clicking a Buff V1 always rotates what it targets, one step per click
+    // (per its level - see engine.ts nextFacing), in addition to
+    // (re)selecting it - so it can't use "click again to deselect" (that
+    // click is already spoken for). Right-click / click off the grid still
+    // deselect it.
     rotateBuffFacing(state, x, y)
     selected = { x, y }
     buildType = null // inspecting a cell exits placement mode - can't have both armed at once
@@ -145,6 +152,23 @@ function handleRemove(): void {
   render()
 }
 
+function handleBuyUpgrade(id: UpgradeId, count: number): void {
+  const widthBefore = state.width
+  const heightBefore = state.height
+  if (buyUpgrade(state, id, count)) {
+    lastResult = recalculate(state) // refresh previews immediately, don't wait for next tick
+    // Grid Size (the one upgrade with a side effect beyond its own level -
+    // see upgrades.ts buyUpgrade()) may have just grown the board.
+    // gridHandle bakes its dimensions in at construction time, so it has to
+    // be rebuilt to pick up the new size - same as useGameState() does for
+    // a freshly loaded/started game.
+    if (state.width !== widthBefore || state.height !== heightBefore) {
+      gridHandle = createGrid(gridContainer, state.width, state.height, handleCellClick)
+    }
+  }
+  render()
+}
+
 // Swaps in a fully-formed GameState (fresh or loaded) and rebuilds whatever
 // UI depends on its dimensions. The one place that "starts" or "replaces"
 // the game. Also the one place that keeps highestValue/highestBuffLevel and
@@ -163,9 +187,10 @@ function useGameState(newState: GameState): void {
   render()
 }
 
-// (Re)starts a fresh game at the given board size. Used when no save exists,
-// and by the debug grid-size selector (which always discards whatever was on
-// the board - there's no way to resize-and-keep a layout).
+// (Re)starts a fresh game at the given board size. Only used at startup when
+// no save exists - growing an existing board is resizeGrid()'s job (see the
+// Grid Size upgrade in upgrades.ts), which preserves what's already there;
+// this always starts completely empty.
 function initGame(width: number, height: number): void {
   const fresh = makeGameState(width, height)
   fresh.currency = new Decimal(STARTING_CURRENCY) // see config.ts: bootstrap for a fresh game
@@ -177,8 +202,12 @@ function initGame(width: number, height: number): void {
 // board, which has nothing to catch up on. Mutates `loaded` in place, then
 // re-saves so lastSaved is stamped to now: otherwise closing the tab again
 // within the next autosave window would compute the same elapsed time twice.
+// Uses the state's OWN effective tick length (Tick Speed upgrade included) -
+// both how many ticks elapsed and how many ticks 24h caps out at have to
+// agree with what the player actually had equipped while away.
 function applyOfflineCatchUp(loaded: GameState): GameState {
-  const ticks = computeOfflineTicks(loaded.lastSaved)
+  const tickMs = effectiveTickMs(loaded)
+  const ticks = computeOfflineTicks(loaded.lastSaved, tickMs)
   if (ticks > 0) {
     const result = applyOfflineProgress(loaded, ticks)
     if (result.currencyGained.gt(0)) {
@@ -199,11 +228,11 @@ const panelHandle = createPanel(
   handleUpgrade,
   handleRemove,
 )
+const upgradesPanelHandle = createUpgradesPanel(tabShellHandle.contentContainer('upgrades'), handleBuyUpgrade)
 createPlaceholderPanel(tabShellHandle.contentContainer('prestige'), 'Prestige')
 const statsPanelHandle = createStatsPanel(tabShellHandle.contentContainer('stats'))
 const achievementsPanelHandle = createAchievementsPanel(tabShellHandle.contentContainer('achievements'))
 createPlaceholderPanel(tabShellHandle.contentContainer('gems'), 'Gems')
-createPlaceholderPanel(tabShellHandle.contentContainer('upgrades'), 'Upgrades')
 
 const settingsPanelHandle = createSettingsPanel(settingsContainer, settings, (newSettings) => {
   settings = newSettings
@@ -219,32 +248,24 @@ const settingsPanelHandle = createSettingsPanel(settingsContainer, settings, (ne
 const saveContainer = document.createElement('div')
 saveContainer.className = 'settings-save-section'
 settingsPanelHandle.contentContainer.appendChild(saveContainer)
-const savePanelHandle = createSavePanel(saveContainer, (imported) => {
-  useGameState(applyOfflineCatchUp(imported))
-})
+const savePanelHandle = createSavePanel(
+  saveContainer,
+  (imported) => {
+    useGameState(applyOfflineCatchUp(imported))
+  },
+  () => {
+    initGame(GRID_W, GRID_H) // fresh board, currency, stats, achievements, upgrades - everything
+    saveToLocalStorage(state) // persist the wipe immediately, don't wait for the next autosave
+  },
+)
 
 // About (inspired-by credit, author, version) at the very bottom of the popover.
 const aboutContainer = document.createElement('div')
 settingsPanelHandle.contentContainer.appendChild(aboutContainer)
 createAboutSection(aboutContainer)
 
-// Try to resume a save; only start fresh if there isn't one. The debug
-// panel's initial grid-size value should reflect whichever board actually
-// loads, so it's created after we know that.
+// Try to resume a save; only start fresh if there isn't one.
 const loadedAtStartup = loadFromLocalStorage()
-const startingSize = loadedAtStartup ? loadedAtStartup.width : GRID_W
-
-createDebugPanel(
-  debugContainer,
-  tickSpeedMultiplier,
-  startingSize,
-  (multiplier) => {
-    tickSpeedMultiplier = multiplier
-  },
-  (size) => {
-    initGame(size, size)
-  },
-)
 
 if (loadedAtStartup) {
   useGameState(applyOfflineCatchUp(loadedAtStartup))
@@ -252,25 +273,21 @@ if (loadedAtStartup) {
   initGame(GRID_W, GRID_H)
 }
 
-// Right-click anywhere in the app (except the debug panel's own form
-// controls, which should keep their normal browser context menu) deselects
-// the armed build type and the inspected cell instead of opening a menu.
+// Right-click anywhere in the app deselects the armed build type and the
+// inspected cell instead of opening a menu.
 app.addEventListener('contextmenu', (e) => {
-  const target = e.target
-  if (target instanceof Element && target.closest('.debug-panel')) return
   e.preventDefault()
   deselectAll()
 })
 
-// Clicking anywhere outside the grid, the side panel, and the debug panel
-// deselects too. (Clicks on the grid are handled by their own listener
-// above, which sets buildType/selected deliberately - don't fight it. The
-// *entire* side panel is excluded, not just the build buttons: it now holds
-// a lot of legitimate controls - Upgrade, tabs, Stats, Save, Settings - and
-// none of them should accidentally wipe the current selection just because
-// they aren't the grid. That's what caused clicking Upgrade to immediately
-// deselect the cell it had just acted on. The debug panel is its own tool,
-// not a "click away" either.)
+// Clicking anywhere outside the grid and the side panel deselects too.
+// (Clicks on the grid are handled by their own listener above, which sets
+// buildType/selected deliberately - don't fight it. The *entire* side panel
+// is excluded, not just the build buttons: it holds a lot of legitimate
+// controls - Upgrade, tabs, Stats, Save, Settings - and none of them should
+// accidentally wipe the current selection just because they aren't the
+// grid. That's what caused clicking Upgrade to immediately deselect the
+// cell it had just acted on.)
 //
 // Uses composedPath() rather than e.target.closest(): a click on an occupied
 // cell hits an inner <span>, and handleCellClick's render() call replaces
@@ -281,7 +298,7 @@ app.addEventListener('contextmenu', (e) => {
 document.addEventListener('click', (e) => {
   const excluded = e.composedPath().some((el) => {
     if (!(el instanceof Element)) return false
-    return el.classList.contains('grid') || el.classList.contains('panel') || el.classList.contains('debug-panel')
+    return el.classList.contains('grid') || el.classList.contains('panel')
   })
   if (excluded) return
   deselectAll()
@@ -296,7 +313,6 @@ document.addEventListener('visibilitychange', () => {
 })
 
 // Fixed-timestep game loop, decoupled from frame rate (spec §5 "Timing").
-// tickSpeedMultiplier scales the tick length for testing (debug panel only).
 let acc = 0
 let lastFrameTime = performance.now()
 
@@ -324,10 +340,10 @@ function frame(now: number): void {
     activeCheckpoint = null
   }
 
-  const effectiveTickMs = TICK_MS * tickSpeedMultiplier
+  const effectiveMs = effectiveTickMs(state)
   let iterations = 0
-  while (acc >= effectiveTickMs && iterations < MAX_CATCHUP_TICKS) {
-    acc -= effectiveTickMs
+  while (acc >= effectiveMs && iterations < MAX_CATCHUP_TICKS) {
+    acc -= effectiveMs
     lastResult = tick(state)
     iterations++
   }

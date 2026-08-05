@@ -2,6 +2,7 @@ import type { GameState, TickResult } from '../game/types'
 import { format } from '../game/format'
 import type { NumberFormatMode } from '../game/format'
 import { countOfType } from '../game/economy'
+import { critChanceFor, critAmountFor } from '../game/upgrades'
 import { formatDuration } from './formatDuration'
 
 export interface StatsPanelHandle {
@@ -35,6 +36,8 @@ export function createStatsPanel(container: HTMLElement): StatsPanelHandle {
     timeInPrestige: makeRow(rows, 'Time in current prestige'),
     activePlayTime: makeRow(rows, 'Active play time'),
     ratePerHour: makeRow(rows, 'Current rate / hour'),
+    globalCritChance: makeRow(rows, 'Global crit chance'),
+    globalCritAmount: makeRow(rows, 'Global crit amount'),
     generatorsOnBoard: makeRow(rows, 'Generators on board'),
     generatorsBuiltAllTime: makeRow(rows, 'Generators built (all-time)'),
     totalUpgrades: makeRow(rows, 'Times leveled (all-time)'),
@@ -54,7 +57,17 @@ export function createStatsPanel(container: HTMLElement): StatsPanelHandle {
     // multiplier - that only changes real-time pacing, not what a tick produces.
     v.ratePerHour.textContent = `${format(result.production.times(3600), formatMode)} / hr`
 
-    const onBoard = countOfType(state, 'basic') + countOfType(state, 'leech') + countOfType(state, 'buff')
+    // "Global" = the account-wide component from upgrades alone, with no
+    // per-cell level bonus mixed in - exactly what critChanceFor/
+    // critAmountFor already compute at basicLevel 0 (see upgrades.ts: the
+    // level-0 terms drop out, +0%/x1), so no separate formula needed here.
+    // An individual Basic's own tooltip (see grid.ts) adds its level bonus
+    // on top of this.
+    v.globalCritChance.textContent = `${(critChanceFor(state, 0) * 100).toFixed(1)}%`
+    v.globalCritAmount.textContent = `${critAmountFor(state, 0).toFixed(2)}x`
+
+    const onBoard =
+      countOfType(state, 'basic') + countOfType(state, 'leech') + countOfType(state, 'buffV1') + countOfType(state, 'buffV2')
     v.generatorsOnBoard.textContent = String(onBoard)
     v.generatorsBuiltAllTime.textContent = String(state.totalGeneratorsBuilt)
     v.totalUpgrades.textContent = String(state.totalUpgrades)

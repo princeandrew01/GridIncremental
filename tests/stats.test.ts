@@ -17,7 +17,7 @@ describe('updateHighestValues', () => {
     const state = makeGameState(3, 1)
     place(state, 0, 0, 'basic', 1)
     place(state, 1, 0, 'leech', 1)
-    place(state, 2, 0, 'buff', 2)
+    place(state, 2, 0, 'buffV1', 2)
 
     updateHighestValues(state, tick(state))
     const afterFirst = { basic: state.highestValue.basic.toString(), leech: state.highestValue.leech.toString() }
@@ -28,6 +28,7 @@ describe('updateHighestValues', () => {
       base: state.cells.map(() => new Decimal(0)),
       final: state.cells.map(() => new Decimal(0)),
       production: new Decimal(0),
+      crits: state.cells.map(() => false),
     }
     updateHighestValues(state, fakeLowResult)
     expect(state.highestValue.basic.toString()).toBe(afterFirst.basic)
@@ -39,9 +40,26 @@ describe('updateHighestValues', () => {
       base: state.cells.map(() => new Decimal(0)),
       final: state.cells.map((_, i) => (i === 0 ? new Decimal(9999) : new Decimal(0))),
       production: new Decimal(0),
+      crits: state.cells.map(() => false),
     }
     updateHighestValues(state, fakeHighResult)
     expect(state.highestValue.basic.toString()).toBe('9999')
+  })
+
+  it('highestBuffLevel tracks the COMBINED level across every buff on the board, not any single one', () => {
+    const state = makeGameState(3, 1)
+    place(state, 0, 0, 'buffV1', 2)
+    place(state, 1, 0, 'buffV2', 3)
+    // no basic/leech needed - buff-only board
+
+    updateHighestValues(state, tick(state))
+    expect(state.highestBuffLevel).toBe(5) // 2 + 3, not max(2, 3)
+
+    // Removing a buff can lower the live sum, but the running max never
+    // drops - same ratchet behaviour as highestValue.basic/leech above.
+    state.cells[cellIndex(1, 0, 3)].type = 'empty'
+    updateHighestValues(state, tick(state))
+    expect(state.highestBuffLevel).toBe(5)
   })
 })
 
@@ -97,11 +115,17 @@ describe('checkAchievements', () => {
     expect(state.currency.lt(state.lifetimeCurrencyEarned.plus(1000))).toBe(true) // spending shows up as currency < lifetime + starting stake
   })
 
-  it('has at least one tier per category and all category ids are unique', () => {
+  it('has at least 10 tiers per category, a unique id, and an icon - the Achievements tab shows one uniform 10-star row per category', () => {
     const ids = ACHIEVEMENT_CATEGORIES.map((c) => c.id)
     expect(new Set(ids).size).toBe(ids.length)
     for (const category of ACHIEVEMENT_CATEGORIES) {
-      expect(category.tiers.length).toBeGreaterThan(0)
+      expect(category.tiers.length).toBeGreaterThanOrEqual(10)
+      expect(category.icon.length).toBeGreaterThan(0)
+      // Tier ids within a category are unique too, and thresholds strictly increase.
+      expect(new Set(category.tiers.map((t) => t.id)).size).toBe(category.tiers.length)
+      for (let i = 1; i < category.tiers.length; i++) {
+        expect(category.tiers[i].threshold).toBeGreaterThan(category.tiers[i - 1].threshold)
+      }
     }
   })
 })

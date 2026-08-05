@@ -14,22 +14,30 @@ import {
  * Scans the board's current final values and bumps the running "highest
  * ever" trackers if exceeded. Safe to call after any recalculation (a real
  * tick or an offline catch-up) rather than every intermediate step: with no
- * removal mechanic, a given cell's own value only ever grows over time, so
- * the end state after a jump is never less than any point along the way.
+ * removal mechanic driving these three down between calls, the end state
+ * after a jump is never less than any point along the way.
+ *
+ * highestBuffLevel tracks the highest COMBINED level across every Buff (V1 +
+ * V2) on the board at any one snapshot, not any single buff's own level - a
+ * lone buff only reaches level 2 or 4, nowhere near enough range for the
+ * Achievements tab's 10-tier requirement (see config.ts). Removing a buff can
+ * lower the live sum, but that's fine: like highestValue below, this only
+ * ever ratchets up, and checkAchievements() only ever adds unlocks, never
+ * revokes them.
  */
 export function updateHighestValues(state: GameState, result: TickResult): void {
+  let buffLevelSum = 0
   for (let i = 0; i < state.cells.length; i++) {
     const cell = state.cells[i]
     if (cell.type === 'basic') {
       if (result.final[i].gt(state.highestValue.basic)) state.highestValue.basic = result.final[i]
     } else if (cell.type === 'leech') {
       if (result.final[i].gt(state.highestValue.leech)) state.highestValue.leech = result.final[i]
-    } else if (cell.type === 'buff') {
-      // Buffs always produce 0 currency, so "highest value" doesn't apply -
-      // highest level reached is its own track instead.
-      if (cell.level > state.highestBuffLevel) state.highestBuffLevel = cell.level
+    } else if (cell.type === 'buffV1' || cell.type === 'buffV2') {
+      buffLevelSum += cell.level
     }
   }
+  if (buffLevelSum > state.highestBuffLevel) state.highestBuffLevel = buffLevelSum
 }
 
 export interface AchievementTier {
@@ -41,6 +49,8 @@ export interface AchievementTier {
 export interface AchievementCategory {
   id: string
   name: string
+  /** A single glyph representing the category in the Achievements tab - see ui/achievementsPanel.ts. */
+  icon: string
   /** Always a Decimal, even for plain-number stats, so tier comparisons and
    *  display formatting are uniform regardless of which stat backs it. */
   currentValue: (state: GameState) => Decimal
@@ -55,44 +65,51 @@ export const ACHIEVEMENT_CATEGORIES: AchievementCategory[] = [
   {
     id: 'playtime',
     name: 'Play Time',
+    icon: '⏱',
     currentValue: (state) => new Decimal(state.activePlayMs / (60 * 60 * 1000)), // ms -> hours
     tiers: ACHIEVEMENT_PLAYTIME_HOURS.map((h) => tier('playtime', h, 'hours')),
   },
   {
     id: 'generators_built',
     name: 'Generators Built',
+    icon: '⚙',
     currentValue: (state) => new Decimal(state.totalGeneratorsBuilt),
     tiers: ACHIEVEMENT_GENERATORS_BUILT.map((n) => tier('generators_built', n, 'built')),
   },
   {
     id: 'times_leveled',
     name: 'Times Leveled',
+    icon: '📈',
     currentValue: (state) => new Decimal(state.totalUpgrades),
     tiers: ACHIEVEMENT_TIMES_LEVELED.map((n) => tier('times_leveled', n, 'upgrades')),
   },
   {
     id: 'currency_farmed',
     name: 'Currency Farmed',
+    icon: '💰',
     currentValue: (state) => state.lifetimeCurrencyEarned,
     tiers: ACHIEVEMENT_CURRENCY_FARMED.map((n) => tier('currency_farmed', n, 'earned')),
   },
   {
     id: 'highest_basic',
     name: 'Highest Basic Value',
+    icon: 'B',
     currentValue: (state) => state.highestValue.basic,
     tiers: ACHIEVEMENT_HIGHEST_BASIC.map((n) => tier('highest_basic', n, 'value')),
   },
   {
     id: 'highest_leech',
     name: 'Highest Leech Value',
+    icon: 'L',
     currentValue: (state) => state.highestValue.leech,
     tiers: ACHIEVEMENT_HIGHEST_LEECH.map((n) => tier('highest_leech', n, 'value')),
   },
   {
     id: 'buff_level',
-    name: 'Buff Level Reached',
+    name: 'Buff Levels',
+    icon: 'F',
     currentValue: (state) => new Decimal(state.highestBuffLevel),
-    tiers: ACHIEVEMENT_BUFF_LEVEL.map((n) => tier('buff_level', n, 'level')),
+    tiers: ACHIEVEMENT_BUFF_LEVEL.map((n) => tier('buff_level', n, 'combined levels')),
   },
 ]
 

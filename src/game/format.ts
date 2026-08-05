@@ -4,24 +4,9 @@ export type NumberFormatMode = 'scientific' | 'engineering' | 'suffix'
 
 const FIXED_SUFFIXES = ['', 'K', 'M', 'B', 'T']
 
-/**
- * Two-letter suffix tiers after T: aa, ab, ..., az, ba, ..., zz - a plain
- * base-26 pair, deliberately skipping single letters (T is immediately
- * followed by aa, not a). Returns null past zz (tier index 675, ~1e2043) -
- * `formatSuffix` falls back to scientific there rather than extending to
- * three letters, well beyond anything this game's current balance will
- * ever reach.
- */
-function letterSuffix(index: number): string | null {
-  if (index < 0 || index > 675) return null
-  const first = String.fromCharCode(97 + Math.floor(index / 26))
-  const second = String.fromCharCode(97 + (index % 26))
-  return first + second
-}
-
+/** K/M/B/T only - anything past T (1e15+) falls straight to scientific notation instead of extending further, see formatSuffix. */
 function suffixForTier(tier: number): string | null {
-  if (tier < FIXED_SUFFIXES.length) return FIXED_SUFFIXES[tier]
-  return letterSuffix(tier - FIXED_SUFFIXES.length)
+  return tier < FIXED_SUFFIXES.length ? FIXED_SUFFIXES[tier] : null
 }
 
 function formatPlain(n: Decimal): string {
@@ -47,7 +32,7 @@ function formatEngineering(n: Decimal): string {
   return `${engMantissa.toFixed(2)}e${engExponent}`
 }
 
-/** K/M/B/T, then aa/ab/.../zz. Falls back to scientific beyond the letter table. */
+/** K/M/B/T, then straight to scientific notation - no further suffix tiers past T. */
 function formatSuffix(n: Decimal): string {
   const exponent = n.exponent
   const tier = Math.floor(exponent / 3)

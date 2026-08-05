@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import Decimal from 'break_infinity.js'
-import { makeGameState, cellIndex } from '../src/game/types'
+import { makeGameState, cellIndex, makeEmptyUpgradeLevels } from '../src/game/types'
 import type { GameState } from '../src/game/types'
 import {
   serialize,
@@ -12,25 +12,31 @@ import {
   loadFromLocalStorage,
   SAVE_VERSION,
 } from '../src/game/save'
+import type { SaveData } from '../src/game/save'
 
 function buildInterestingState(): GameState {
   const state = makeGameState(4, 3)
   const basic = state.cells[cellIndex(0, 0, 4)]
   basic.type = 'basic'
-  basic.level = 7
+  basic.level = 4
   basic.buffAccum = new Decimal(3)
   basic.placementCost = new Decimal(10)
 
   const leech = state.cells[cellIndex(1, 0, 4)]
   leech.type = 'leech'
-  leech.level = 3
+  leech.level = 2
   leech.placementCost = new Decimal(132.5)
 
-  const buff = state.cells[cellIndex(2, 0, 4)]
-  buff.type = 'buff'
-  buff.level = 4
-  buff.facing = 'left'
-  buff.placementCost = new Decimal(287.75)
+  const buffV1 = state.cells[cellIndex(2, 0, 4)]
+  buffV1.type = 'buffV1'
+  buffV1.level = 1
+  buffV1.facing = 'left'
+  buffV1.placementCost = new Decimal(287.75)
+
+  const buffV2 = state.cells[cellIndex(3, 0, 4)]
+  buffV2.type = 'buffV2'
+  buffV2.level = 3
+  buffV2.placementCost = new Decimal(4000)
 
   // Beyond Number.MAX_VALUE (~1.8e308) - the whole reason break_infinity
   // exists, and exactly what a naive JSON round-trip through a plain number
@@ -38,6 +44,16 @@ function buildInterestingState(): GameState {
   state.currency = Decimal.fromMantissaExponent(1.23456, 350)
   state.tickCount = 4242
   state.lastSaved = 1_700_000_000_000
+
+  state.upgrades = {
+    tickSpeed: 3,
+    basicValue: 12345,
+    generatorValuePct: 5,
+    critChance: 2,
+    critAmount: 1,
+    removalRefund: 4,
+    gridSize: 2,
+  }
 
   state.startedAt = 1_699_000_000_000
   state.prestigeStartedAt = 1_699_500_000_000
@@ -69,6 +85,7 @@ function expectStatesEqual(a: GameState, b: GameState): void {
     expect(b.cells[i].placementCost.toString()).toBe(a.cells[i].placementCost.toString())
   }
 
+  expect(b.upgrades).toEqual(a.upgrades)
   expect(b.startedAt).toBe(a.startedAt)
   expect(b.prestigeStartedAt).toBe(a.prestigeStartedAt)
   expect(b.activePlayMs).toBe(a.activePlayMs)
@@ -82,7 +99,7 @@ function expectStatesEqual(a: GameState, b: GameState): void {
 }
 
 describe('save/load', () => {
-  it('7. round-trip through serialize/deserialize (simulating actual JSON storage) reproduces identical state, including Decimal precision beyond 1e308', () => {
+  it('round-trip through serialize/deserialize (simulating actual JSON storage) reproduces identical state, including Decimal precision beyond 1e308', () => {
     const original = buildInterestingState()
     // Route through an actual JSON string, same as localStorage would -
     // catches anything that only survives as long as it stays a live object.
@@ -117,15 +134,15 @@ describe('save/load', () => {
     expect(save.version).toBe(SAVE_VERSION)
   })
 
-  it('migrate() backfills a v1 save (predating lifetime stats and placementCost) all the way to the current version', () => {
-    // Shaped exactly like a save produced before either feature existed - no
-    // lifetime-stat fields and no per-cell `p`, not just missing/undefined.
+  it('migrate() backfills a v1 save (predating lifetime stats, placementCost, and Alpha 0.2\'s rebalance) all the way to the current version', () => {
+    // Shaped exactly like a save produced before any of those features
+    // existed - no lifetime-stat fields, no per-cell `p`, and 1-based levels.
     const v1Save = {
       version: 1,
       width: 2,
       height: 1,
       cells: [
-        { t: 1, l: 3, b: '0', f: 'up' }, // basic
+        { t: 1, l: 3, b: '0', f: 'up' }, // basic, old 1-based level 3
         { t: 0, l: 0, b: '0', f: 'up' }, // empty
       ],
       currency: '4200',
@@ -133,8 +150,8 @@ describe('save/load', () => {
       lastSaved: 1_700_000_000_000,
     }
 
-    const migrated = migrate(v1Save as unknown as import('../src/game/save').SaveData)
-    expect(migrated.version).toBe(3) // cascades v1 -> v2 -> v3 in one call
+    const migrated = migrate(v1Save as unknown as SaveData)
+    expect(migrated.version).toBe(5) // cascades v1 -> v2 -> v3 -> v4 -> v5 in one call
     expect(migrated.startedAt).toBe(v1Save.lastSaved)
     expect(migrated.prestigeStartedAt).toBe(v1Save.lastSaved)
     expect(migrated.activePlayMs).toBe(0)
@@ -147,22 +164,27 @@ describe('save/load', () => {
     // v2 -> v3: placementCost defaults to '0' - conservative on purpose, see
     // save.ts. A pre-migration generator refunds nothing if removed.
     expect(migrated.cells.every((c) => c.p === '0')).toBe(true)
+    // v3 -> v4: levels rebase from 1-based to 0-based and clamp to the new,
+    // smaller max: basic level 3 -> min(3-1, 5) = 2.
+    expect(migrated.cells[0].l).toBe(2)
+    expect(migrated.cells[1].l).toBe(0) // empty cell: stays 0
+    expect(migrated.upgrades).toEqual(makeEmptyUpgradeLevels())
 
     // And it loads cleanly end-to-end through deserialize, not just migrate().
-    const state = deserialize(v1Save as unknown as import('../src/game/save').SaveData)
+    const state = deserialize(v1Save as unknown as SaveData)
     expect(state.cells[0].type).toBe('basic')
-    expect(state.cells[0].level).toBe(3)
+    expect(state.cells[0].level).toBe(2)
     expect(state.cells[0].placementCost.toString()).toBe('0')
     expect(state.currency.toString()).toBe('4200')
     expect(state.lifetimeCurrencyEarned.toString()).toBe('4200')
   })
 
-  it('migrate() backfills a v2 save (predating placementCost) to v3', () => {
+  it('migrate() backfills a v2 save (predating placementCost and Alpha 0.2\'s rebalance) to the current version', () => {
     const v2Save = {
       version: 2,
       width: 1,
       height: 1,
-      cells: [{ t: 1, l: 1, b: '0', f: 'up' }],
+      cells: [{ t: 1, l: 1, b: '0', f: 'up' }], // basic, old 1-based level 1 (no bonuses)
       currency: '50',
       tickCount: 10,
       lastSaved: 1_700_000_000_000,
@@ -177,12 +199,92 @@ describe('save/load', () => {
       unlockedAchievements: ['generators_built_1'],
     }
 
-    const migrated = migrate(v2Save as unknown as import('../src/game/save').SaveData)
-    expect(migrated.version).toBe(3)
+    const migrated = migrate(v2Save as unknown as SaveData)
+    expect(migrated.version).toBe(5)
     expect(migrated.cells[0].p).toBe('0')
+    expect(migrated.cells[0].l).toBe(0) // rebased: min(1-1, 5) = 0
+    expect(migrated.upgrades).toEqual(makeEmptyUpgradeLevels())
     // Everything from v2 carries through untouched.
     expect(migrated.activePlayMs).toBe(5000)
     expect(migrated.unlockedAchievements).toEqual(['generators_built_1'])
+  })
+
+  it("migrate() rebases levels and carries the buff type across (index 3 stays buffV1) when migrating a v3 save (pre-Alpha-0.2) to v4", () => {
+    const v3Save = {
+      version: 3,
+      width: 2,
+      height: 1,
+      cells: [
+        { t: 1, l: 10, b: '0', f: 'up', p: '5' }, // basic, maxed out under the old system (old max level 10)
+        { t: 3, l: 5, b: '0', f: 'left', p: '2' }, // buff, maxed out under the old system (old max level 5)
+      ],
+      currency: '100',
+      tickCount: 50,
+      lastSaved: 1_700_000_000_000,
+      startedAt: 1_699_000_000_000,
+      prestigeStartedAt: 1_699_000_000_000,
+      activePlayMs: 1000,
+      lifetimeCurrencyEarned: '100',
+      totalGeneratorsBuilt: 2,
+      totalUpgrades: 0,
+      highestValue: { basic: '10', leech: '0' },
+      highestBuffLevel: 5,
+      unlockedAchievements: [],
+    }
+
+    const migrated = migrate(v3Save as unknown as SaveData)
+    expect(migrated.version).toBe(5)
+    expect(migrated.cells[0].l).toBe(5) // basic: min(10-1, MAX_LEVEL.basic=5) = 5, clamped down from 9
+    expect(migrated.cells[0].t).toBe(1)
+    expect(migrated.cells[1].l).toBe(2) // buffV1: min(5-1, MAX_LEVEL.buffV1=2) = 2, clamped down from 4
+    expect(migrated.cells[1].t).toBe(3) // unchanged index - an old `buff` cell is a buffV1 for free
+    expect(migrated.upgrades).toEqual(makeEmptyUpgradeLevels())
+    expect(migrated.highestBuffLevel).toBe(4) // max(0, 5-1)
+
+    const state = deserialize(v3Save as unknown as SaveData)
+    expect(state.cells[1].type).toBe('buffV1')
+    expect(state.cells[1].level).toBe(2)
+    expect(state.upgrades.basicValue).toBe(0)
+  })
+
+  it('migrate() backfills the gridSize upgrade key (and only that key) when migrating a v4 save (pre-Grid-Size-upgrade) to v5', () => {
+    const v4Save = {
+      version: 4,
+      width: 8,
+      height: 8,
+      cells: Array.from({ length: 64 }, () => ({ t: 0, l: 0, b: '0', f: 'up', p: '0' })),
+      currency: '100',
+      tickCount: 50,
+      lastSaved: 1_700_000_000_000,
+      startedAt: 1_699_000_000_000,
+      prestigeStartedAt: 1_699_000_000_000,
+      activePlayMs: 1000,
+      lifetimeCurrencyEarned: '100',
+      totalGeneratorsBuilt: 0,
+      totalUpgrades: 0,
+      highestValue: { basic: '0', leech: '0' },
+      highestBuffLevel: 0,
+      unlockedAchievements: [],
+      // Shaped exactly like a real v4 save: has the other 6 keys (some
+      // already leveled up), genuinely missing `gridSize` - not undefined,
+      // absent - since the field didn't exist yet.
+      upgrades: { tickSpeed: 5, basicValue: 100, generatorValuePct: 2, critChance: 3, critAmount: 1, removalRefund: 0 },
+    }
+
+    const migrated = migrate(v4Save as unknown as SaveData)
+    expect(migrated.version).toBe(5)
+    expect(migrated.upgrades.gridSize).toBe(0) // backfilled
+    expect(migrated.upgrades.tickSpeed).toBe(5) // everything else carries through untouched
+    expect(migrated.upgrades.basicValue).toBe(100)
+
+    // Board size (8x8, already bigger than gridSizeForLevel(0) = 3x3) is left
+    // exactly as it was - the migration doesn't touch width/height at all.
+    expect(migrated.width).toBe(8)
+    expect(migrated.height).toBe(8)
+
+    const state = deserialize(v4Save as unknown as SaveData)
+    expect(state.upgrades.gridSize).toBe(0)
+    expect(state.width).toBe(8)
   })
 })
 

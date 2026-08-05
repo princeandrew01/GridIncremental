@@ -1,8 +1,19 @@
 import { describe, it, expect } from 'vitest'
 import Decimal from 'break_infinity.js'
 import { makeGameState, cellIndex } from '../src/game/types'
-import { recalculate, tick, rotateBuffFacing, facingTargetIndex, FACING_ORDER } from '../src/game/engine'
-import { BASIC_MULT } from '../src/game/config'
+import {
+  recalculate,
+  tick,
+  rotateBuffFacing,
+  facingTargetIndex,
+  activeFacings,
+  nextFacing,
+  rollCrits,
+  expectedCritMultipliers,
+  FACING_ORDER,
+} from '../src/game/engine'
+import { critChanceFor, critAmountFor } from '../src/game/upgrades'
+import { BASIC_MULT, BUFF_V2_POWER } from '../src/game/config'
 import type { GameState, CellType, Facing } from '../src/game/types'
 
 function place(state: GameState, x: number, y: number, type: CellType, level: number, facing?: Facing) {
@@ -12,10 +23,17 @@ function place(state: GameState, x: number, y: number, type: CellType, level: nu
   if (facing) state.cells[i].facing = facing
 }
 
+// Forces every crit roll to miss (rng() = 1 is never < any chance in [0,1)) -
+// used throughout for tests that aren't about crit itself, so their expected
+// values stay exact instead of occasionally getting a random boost.
+const NEVER_CRIT = () => 1
+// Forces every roll to hit (rng() = 0 is always < any positive chance).
+const ALWAYS_CRIT = () => 0
+
 describe('engine', () => {
-  it('1. single basic, level 1, value 1, empty board -> production 1', () => {
+  it('1. single basic, level 0, value 1, empty board -> production 1', () => {
     const state = makeGameState(3, 3)
-    place(state, 1, 1, 'basic', 1)
+    place(state, 1, 1, 'basic', 0)
     const result = recalculate(state)
     expect(result.production.toNumber()).toBe(1)
   })
@@ -23,17 +41,17 @@ describe('engine', () => {
   it('2. the three-leech grid: bases 2/2/2, finals 4/6/4, total 20, stable after 100 ticks', () => {
     const state = makeGameState(3, 3)
     // row 0: basics
-    place(state, 0, 0, 'basic', 1)
-    place(state, 1, 0, 'basic', 1)
-    place(state, 2, 0, 'basic', 1)
-    // row 1: level-1 leeches
-    place(state, 0, 1, 'leech', 1)
-    place(state, 1, 1, 'leech', 1)
-    place(state, 2, 1, 'leech', 1)
+    place(state, 0, 0, 'basic', 0)
+    place(state, 1, 0, 'basic', 0)
+    place(state, 2, 0, 'basic', 0)
+    // row 1: level-0 leeches (orthogonal range)
+    place(state, 0, 1, 'leech', 0)
+    place(state, 1, 1, 'leech', 0)
+    place(state, 2, 1, 'leech', 0)
     // row 2: basics
-    place(state, 0, 2, 'basic', 1)
-    place(state, 1, 2, 'basic', 1)
-    place(state, 2, 2, 'basic', 1)
+    place(state, 0, 2, 'basic', 0)
+    place(state, 1, 2, 'basic', 0)
+    place(state, 2, 2, 'basic', 0)
 
     const result = recalculate(state)
     const leechBases = [0, 1, 2].map((x) => result.base[cellIndex(x, 1, 3)].toNumber())
@@ -45,9 +63,10 @@ describe('engine', () => {
     expect(result.production.toNumber()).toBe(20)
 
     // Regression test for the feedback loop: production must stay exactly 20,
-    // tick after tick, with no drift or blowup.
+    // tick after tick, with no drift or blowup. Crits forced off so this
+    // stays exact rather than occasionally jumping.
     for (let i = 0; i < 100; i++) {
-      const r = tick(state)
+      const r = tick(state, NEVER_CRIT)
       expect(r.production.toNumber()).toBe(20)
     }
     expect(state.currency.toNumber()).toBe(2000) // 100 ticks * 20
@@ -55,11 +74,11 @@ describe('engine', () => {
 
   it('3. buff accumulation: basic base increases by 1 at tick 5, 10, 15, not between', () => {
     const state = makeGameState(2, 1)
-    place(state, 0, 0, 'basic', 1)
-    place(state, 1, 0, 'buff', 1, 'left') // facing the basic at (0, 0)
+    place(state, 0, 0, 'basic', 0)
+    place(state, 1, 0, 'buffV1', 0, 'left') // facing the basic at (0, 0)
 
     const baseAt = (t: number) => {
-      const r = tick(state)
+      const r = tick(state, NEVER_CRIT)
       void t
       return r.base[cellIndex(0, 0, state.width)].toNumber()
     }
@@ -81,24 +100,24 @@ describe('engine', () => {
     expect(baseAt(15)).toBe(4) // tick 15: +1
   })
 
-  it('4. level 3 leech on a filled board matches the naive whole-board sum', () => {
+  it('4. level 2 leech (whole board) on a filled board matches the naive whole-board sum', () => {
     const state = makeGameState(4, 4)
-    // Fill the board with a mix of basics, buffs, and one level-3 leech.
-    let level = 1
+    // Fill the board with a mix of basics, buffs, and one level-2 (whole-board) leech.
+    let n = 0
     for (let y = 0; y < 4; y++) {
       for (let x = 0; x < 4; x++) {
         const i = cellIndex(x, y, 4)
         if (x === 3 && y === 3) {
           state.cells[i].type = 'leech'
-          state.cells[i].level = 3
+          state.cells[i].level = 2
         } else if ((x + y) % 2 === 0) {
           state.cells[i].type = 'basic'
-          state.cells[i].level = (level % 10) + 1
-          level++
+          state.cells[i].level = n % 6 // 0-5
+          n++
         } else {
-          state.cells[i].type = 'buff'
-          state.cells[i].level = (level % 5) + 1
-          level++
+          state.cells[i].type = 'buffV1'
+          state.cells[i].level = n % 3 // 0-2
+          n++
         }
       }
     }
@@ -106,16 +125,14 @@ describe('engine', () => {
     const result = recalculate(state)
 
     // Naive whole-board sum: every non-leech cell's base value. A Basic's
-    // base is BASIC_BASE_VALUE + buffAccum + (level - 1) - the multiplier
-    // applies only to its own final output, not to what a Leech reads.
+    // base no longer depends on its own level at all (that moved to the
+    // account-wide Basic Generator Value upgrade) - just BASIC_BASE_VALUE (1)
+    // plus buffAccum (0 here, nothing has ticked).
     let naiveSum = new Decimal(0)
     for (let y = 0; y < 4; y++) {
       for (let x = 0; x < 4; x++) {
         const i = cellIndex(x, y, 4)
-        const cell = state.cells[i]
-        if (cell.type === 'basic') {
-          naiveSum = naiveSum.plus(new Decimal(1).plus(cell.buffAccum).plus(cell.level - 1))
-        }
+        if (state.cells[i].type === 'basic') naiveSum = naiveSum.plus(1)
         // buffs contribute 0 to base, empty contribute 0
       }
     }
@@ -126,36 +143,36 @@ describe('engine', () => {
     expect(result.final[leechIdx].toNumber()).toBeCloseTo(naiveSum.toNumber(), 9)
   })
 
-  it('5. buff before multiplier: a buff next to a level 5 basic gives more output than next to a level 1 basic', () => {
+  it('5. buff before multiplier: a buff next to a level 5 basic gives more output than next to a level 0 basic', () => {
     const highState = makeGameState(2, 1)
     place(highState, 0, 0, 'basic', 5)
-    place(highState, 1, 0, 'buff', 1, 'left') // facing the basic at (0, 0)
+    place(highState, 1, 0, 'buffV1', 0, 'left') // facing the basic at (0, 0)
 
     const lowState = makeGameState(2, 1)
-    place(lowState, 0, 0, 'basic', 1)
-    place(lowState, 1, 0, 'buff', 1, 'left') // facing the basic at (0, 0)
+    place(lowState, 0, 0, 'basic', 0)
+    place(lowState, 1, 0, 'buffV1', 0, 'left') // facing the basic at (0, 0)
 
     // Advance both boards to tick 5 so the buff has fired once.
     let highResult = recalculate(highState)
     let lowResult = recalculate(lowState)
     for (let i = 0; i < 5; i++) {
-      highResult = tick(highState)
-      lowResult = tick(lowState)
+      highResult = tick(highState, NEVER_CRIT)
+      lowResult = tick(lowState, NEVER_CRIT)
     }
 
     expect(highResult.production.toNumber()).toBeGreaterThan(lowResult.production.toNumber())
   })
 
-  it('6. a buff only buffs the single cell it faces, not other adjacent basics', () => {
+  it('6. a level-0 buff V1 only buffs the single cell it faces, not other adjacent basics', () => {
     // Buff at (1,1) surrounded by 4 basics, facing only 'up'.
     const state = makeGameState(3, 3)
-    place(state, 1, 0, 'basic', 1) // up
-    place(state, 1, 2, 'basic', 1) // down
-    place(state, 0, 1, 'basic', 1) // left
-    place(state, 2, 1, 'basic', 1) // right
-    place(state, 1, 1, 'buff', 1, 'up')
+    place(state, 1, 0, 'basic', 0) // up
+    place(state, 1, 2, 'basic', 0) // down
+    place(state, 0, 1, 'basic', 0) // left
+    place(state, 2, 1, 'basic', 0) // right
+    place(state, 1, 1, 'buffV1', 0, 'up')
 
-    for (let i = 0; i < 5; i++) tick(state)
+    for (let i = 0; i < 5; i++) tick(state, NEVER_CRIT)
 
     expect(state.cells[cellIndex(1, 0, 3)].buffAccum.toNumber()).toBe(1) // targeted: gained power
     expect(state.cells[cellIndex(1, 2, 3)].buffAccum.toNumber()).toBe(0) // not targeted
@@ -163,9 +180,66 @@ describe('engine', () => {
     expect(state.cells[cellIndex(2, 1, 3)].buffAccum.toNumber()).toBe(0) // not targeted
   })
 
-  it('7. rotateBuffFacing cycles clockwise and wraps, and is a no-op on non-buff cells', () => {
+  it('7. a level-1 buff V1 also buffs the opposite side, but not the perpendicular axis', () => {
     const state = makeGameState(3, 3)
-    place(state, 1, 1, 'buff', 1, 'up')
+    place(state, 1, 0, 'basic', 0) // up
+    place(state, 1, 2, 'basic', 0) // down
+    place(state, 0, 1, 'basic', 0) // left
+    place(state, 2, 1, 'basic', 0) // right
+    place(state, 1, 1, 'buffV1', 1, 'up') // level 1: vertical axis (up + down)
+
+    for (let i = 0; i < 5; i++) tick(state, NEVER_CRIT)
+
+    expect(state.cells[cellIndex(1, 0, 3)].buffAccum.toNumber()).toBe(1) // up: targeted
+    expect(state.cells[cellIndex(1, 2, 3)].buffAccum.toNumber()).toBe(1) // down: targeted (opposite side)
+    expect(state.cells[cellIndex(0, 1, 3)].buffAccum.toNumber()).toBe(0) // left: not targeted
+    expect(state.cells[cellIndex(2, 1, 3)].buffAccum.toNumber()).toBe(0) // right: not targeted
+  })
+
+  it('8. a level-2 buff V1 buffs all 4 sides', () => {
+    const state = makeGameState(3, 3)
+    place(state, 1, 0, 'basic', 0)
+    place(state, 1, 2, 'basic', 0)
+    place(state, 0, 1, 'basic', 0)
+    place(state, 2, 1, 'basic', 0)
+    place(state, 1, 1, 'buffV1', 2, 'up')
+
+    for (let i = 0; i < 5; i++) tick(state, NEVER_CRIT)
+
+    for (const [x, y] of [[1, 0], [1, 2], [0, 1], [2, 1]]) {
+      expect(state.cells[cellIndex(x, y, 3)].buffAccum.toNumber()).toBe(1)
+    }
+  })
+
+  it('9. a buff V2 buffs every basic on the board regardless of position, scaled by its level', () => {
+    const state = makeGameState(4, 4)
+    place(state, 0, 0, 'basic', 0)
+    place(state, 3, 3, 'basic', 0)
+    place(state, 2, 1, 'buffV2', 2) // power = BUFF_V2_POWER[2] = 4
+
+    for (let i = 0; i < 5; i++) tick(state, NEVER_CRIT) // one firing (BUFF_TICK_INTERVAL = 5)
+
+    expect(state.cells[cellIndex(0, 0, 4)].buffAccum.toNumber()).toBe(BUFF_V2_POWER[2])
+    expect(state.cells[cellIndex(3, 3, 4)].buffAccum.toNumber()).toBe(BUFF_V2_POWER[2])
+  })
+
+  it('10. nextFacing: level 0 cycles all 4 sides, level 1 toggles the two axes, level 2 is a no-op', () => {
+    expect(nextFacing('up', 0)).toBe('right')
+    expect(nextFacing('right', 0)).toBe('down')
+    expect(nextFacing('down', 0)).toBe('left')
+    expect(nextFacing('left', 0)).toBe('up')
+
+    expect(nextFacing('up', 1)).toBe('right') // vertical -> horizontal representative
+    expect(nextFacing('down', 1)).toBe('right')
+    expect(nextFacing('right', 1)).toBe('up') // horizontal -> vertical representative
+    expect(nextFacing('left', 1)).toBe('up')
+
+    for (const f of FACING_ORDER) expect(nextFacing(f, 2)).toBe(f) // nothing left to rotate
+  })
+
+  it('11. activeFacings matches rotateBuffFacing/nextFacing behaviour and rotateBuffFacing is a no-op on non-buffV1 cells', () => {
+    const state = makeGameState(3, 3)
+    place(state, 1, 1, 'buffV1', 0, 'up')
 
     const seen: Facing[] = [state.cells[cellIndex(1, 1, 3)].facing]
     for (let i = 0; i < 4; i++) {
@@ -173,35 +247,98 @@ describe('engine', () => {
       seen.push(state.cells[cellIndex(1, 1, 3)].facing)
     }
     expect(seen).toEqual(['up', 'right', 'down', 'left', 'up']) // full rotation, back to start
-    expect(seen.slice(0, 4).sort()).toEqual([...FACING_ORDER].sort())
+    expect(activeFacings('up', 0)).toEqual(['up'])
+    expect(activeFacings('up', 1).sort()).toEqual(['down', 'up'])
+    expect(activeFacings('up', 2)).toEqual(FACING_ORDER)
 
-    place(state, 0, 0, 'basic', 1)
-    expect(rotateBuffFacing(state, 0, 0)).toBe(false) // not a buff, no-op
+    place(state, 0, 0, 'basic', 0)
+    expect(rotateBuffFacing(state, 0, 0)).toBe(false) // not a buffV1, no-op
+
+    place(state, 0, 1, 'buffV2', 0)
+    expect(rotateBuffFacing(state, 0, 1)).toBe(false) // buffV2 never rotates
   })
 
-  it('8. a buff facing off the board targets nothing (no crash, no effect)', () => {
+  it('12. a buff V1 facing off the board targets nothing (no crash, no effect)', () => {
     const state = makeGameState(2, 2)
-    place(state, 0, 0, 'buff', 1, 'up') // (0,-1) is off-board
-    place(state, 1, 0, 'basic', 1)
+    place(state, 0, 0, 'buffV1', 0, 'up') // (0,-1) is off-board
+    place(state, 1, 0, 'basic', 0)
 
     expect(facingTargetIndex(0, 0, 'up', 2, 2)).toBeNull()
 
-    for (let i = 0; i < 5; i++) tick(state)
+    for (let i = 0; i < 5; i++) tick(state, NEVER_CRIT)
     expect(state.cells[cellIndex(1, 0, 2)].buffAccum.toNumber()).toBe(0)
   })
 
-  it('9. a leveled-up basic: its own output is multiplied, but a Leech only ever reads the pre-multiplier base', () => {
+  it("13. a leveled-up basic's own output is multiplied, but a Leech only ever reads the pre-multiplier base", () => {
     const state = makeGameState(3, 1)
-    place(state, 0, 0, 'basic', 3) // base = 1 + 0 + (3-1) = 3; own output = 3 * BASIC_MULT[3]
-    place(state, 1, 0, 'leech', 1)
+    place(state, 0, 0, 'basic', 3) // base = 1 (level no longer grows it); own output = 1 * BASIC_MULT[3]
+    place(state, 1, 0, 'leech', 0)
 
     const result = recalculate(state)
     const basicIdx = cellIndex(0, 0, 3)
     const leechIdx = cellIndex(1, 0, 3)
 
-    expect(result.base[basicIdx].toNumber()).toBe(3) // pre-multiplier: what the Leech reads
-    expect(result.final[basicIdx].toNumber()).toBe(3 * BASIC_MULT[3]) // own output: multiplied
-    expect(result.base[leechIdx].toNumber()).toBe(3) // Leech read the pre-multiplier base, not 3 * BASIC_MULT[3]
-    expect(result.final[leechIdx].toNumber()).toBe(3) // no other leeches on this board
+    expect(result.base[basicIdx].toNumber()).toBe(1) // pre-multiplier: what the Leech reads
+    expect(result.final[basicIdx].toNumber()).toBe(1 * BASIC_MULT[3]) // own output: multiplied
+    expect(result.base[leechIdx].toNumber()).toBe(1) // Leech read the pre-multiplier base
+    expect(result.final[leechIdx].toNumber()).toBe(1) // no other leeches on this board
+  })
+
+  it('14. a forced crit multiplier boosts a basic base and is visible to a neighbouring Leech (one roll, shared)', () => {
+    const state = makeGameState(3, 1)
+    place(state, 0, 0, 'basic', 0)
+    place(state, 1, 0, 'leech', 0)
+    const n = state.width * state.height
+    const critMultipliers = new Array(n).fill(1)
+    critMultipliers[cellIndex(0, 0, 3)] = 2 // force a x2 crit on the basic only
+
+    const result = recalculate(state, critMultipliers)
+    const basicIdx = cellIndex(0, 0, 3)
+    const leechIdx = cellIndex(1, 0, 3)
+
+    expect(result.base[basicIdx].toNumber()).toBe(2) // 1 (raw) * 2 (crit)
+    expect(result.crits[basicIdx]).toBe(true)
+    expect(result.base[leechIdx].toNumber()).toBe(2) // Leech inherits the already-critted base, no roll of its own
+  })
+
+  it('15. rollCrits only rolls for basic cells, and rng threshold decides hit vs miss', () => {
+    const state = makeGameState(3, 1)
+    place(state, 0, 0, 'basic', 0)
+    place(state, 1, 0, 'leech', 0)
+    place(state, 2, 0, 'buffV1', 0)
+
+    const hit = rollCrits(state, ALWAYS_CRIT)
+    expect(hit[cellIndex(0, 0, 3)]).toBe(critAmountFor(state, 0))
+    expect(hit[cellIndex(1, 0, 3)]).toBe(1) // leech never rolls its own crit
+    expect(hit[cellIndex(2, 0, 3)]).toBe(1) // buffs never crit
+
+    const miss = rollCrits(state, NEVER_CRIT)
+    expect(miss[cellIndex(0, 0, 3)]).toBe(1)
+  })
+
+  it('16. expectedCritMultipliers is 1 + chance * (amount - 1) for a basic, and exactly 1 elsewhere', () => {
+    const state = makeGameState(2, 1)
+    place(state, 0, 0, 'basic', 3)
+    place(state, 1, 0, 'leech', 0)
+
+    const expected = expectedCritMultipliers(state)
+    const chance = critChanceFor(state, 3)
+    const amount = critAmountFor(state, 3)
+    expect(expected[cellIndex(0, 0, 2)]).toBeCloseTo(1 + chance * (amount - 1), 12)
+    expect(expected[cellIndex(1, 0, 2)]).toBe(1)
+  })
+
+  it('17. tick() with rng forced to always hit produces a crit-boosted production', () => {
+    const critState = makeGameState(2, 1)
+    place(critState, 0, 0, 'basic', 0)
+    const noCritState = makeGameState(2, 1)
+    place(noCritState, 0, 0, 'basic', 0)
+
+    const critResult = tick(critState, ALWAYS_CRIT)
+    const noCritResult = tick(noCritState, NEVER_CRIT)
+
+    expect(critResult.crits[cellIndex(0, 0, 2)]).toBe(true)
+    expect(critResult.production.toNumber()).toBeGreaterThan(noCritResult.production.toNumber())
+    expect(critResult.production.toNumber()).toBeCloseTo(critAmountFor(critState, 0), 9)
   })
 })

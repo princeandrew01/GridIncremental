@@ -5,7 +5,7 @@ export interface SavePanelHandle {
   update(state: GameState): void
 }
 
-export function createSavePanel(container: HTMLElement, onImport: (state: GameState) => void): SavePanelHandle {
+export function createSavePanel(container: HTMLElement, onImport: (state: GameState) => void, onReset: () => void): SavePanelHandle {
   container.classList.add('panel-section')
 
   const heading = document.createElement('h2')
@@ -87,7 +87,27 @@ export function createSavePanel(container: HTMLElement, onImport: (state: GameSt
   }
 
   buttonRow.append(exportButton, copyButton, importButton)
-  container.append(heading, status, textarea, buttonRow, message)
+
+  // Separated from Export/Import below a divider, styled like the grid's own
+  // destructive action (Remove) - a plain native confirm() is enough of a
+  // speed bump for a browser game with no other modal system, and puts the
+  // "are you sure" as close to the click as possible.
+  const dangerZone = document.createElement('div')
+  dangerZone.className = 'danger-zone'
+  const dangerHeading = document.createElement('h3')
+  dangerHeading.textContent = 'Danger Zone'
+  const resetButton = document.createElement('button')
+  resetButton.type = 'button'
+  resetButton.className = 'reset-button'
+  resetButton.textContent = 'Reset Progress'
+  resetButton.addEventListener('click', () => {
+    if (!window.confirm('Reset all progress? This wipes your save completely and cannot be undone.')) return
+    onReset()
+    message.textContent = 'Progress reset.'
+  })
+  dangerZone.append(dangerHeading, resetButton)
+
+  container.append(heading, status, textarea, buttonRow, message, dangerZone)
 
   function update(state: GameState): void {
     currentState = state
