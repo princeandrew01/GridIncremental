@@ -4,7 +4,7 @@ import type { UpgradeId, UpgradeLevels, PowerCoreUpgradeId, PowerCoreUpgradeLeve
 
 // Shown in the settings popover's About section. Bump the version by hand as
 // the game progresses.
-export const APP_VERSION = 'Alpha 0.3'
+export const APP_VERSION = 'Alpha 0.31'
 export const APP_AUTHOR = 'Asingh'
 export const INSPIRED_BY_NAME = 'Gridle'
 export const INSPIRED_BY_URL = 'https://parsakaali.itch.io/gridle'
@@ -25,74 +25,105 @@ export const GRID_H = 4
 export const MAX_GRID_SIZE = 10
 
 // --- Levels: 0-based everywhere. Level 0 = freshly placed, no upgrades
-// bought yet. Arrays below are indexed directly by level, no dead entry 0. ---
-export const MAX_LEVEL = { basic: 5, leech: 2, buffV1: 2, buffV2: 4, powerCoreGenerator: 4 } as const
+// bought yet. Arrays below are indexed directly by level, no dead entry 0.
+// The four evolved types cap at 0 - no leveling once evolved, for now (see
+// _working/ALPHA_0.31_CHANGES.md "Deferred"). ---
+export const MAX_LEVEL = {
+  basic: 10,
+  leech: 2,
+  buff: 9,
+  buffStacker: 0,
+  buffAll: 0,
+  basicCrit: 0,
+  basicSteady: 0,
+  powerCoreGenerator: 4,
+} as const
 
-// A Basic's `base` (level 0, no buffs, no upgrades) - this is the number
-// Leeches read (crit included - see engine.ts). Flat per-level growth was
-// moved out of leveling entirely, into the Basic Generator Value upgrade
-// below; leveling now only grows crit chance/amount (see CRIT_* below).
+// A Basic's `base` (level 0, no buffs, no upgrades) - the raw pre-level,
+// pre-Buff, crit-inclusive figure (a display/diagnostic value - see
+// engine.ts). Flat per-level growth was moved out of leveling entirely,
+// into the Basic Generator Value upgrade below; leveling instead grows the
+// private level multiplier (BASIC_MULT).
 export const BASIC_BASE_VALUE = 1
 
-// Multiplier applied to a Basic's `base` to get its OWN output - never seen
-// by Leeches, which only ever read the pre-multiplier `base`. Index = level.
-export const BASIC_MULT = [1, 1.5, 3, 7.5, 22.5, 78.75]
+// Multiplier applied to a Basic's `base` to get its OWN output (`final`).
+// Index = level. A nearby Leech steals a share of this `final` value, not
+// the pre-multiplier `base` (confirmed with the user: "leech should leech
+// the output value not the base value"). Alpha 0.31: flat +1.5x/level after
+// the first (was a much steeper curve topping out at 5 levels/78.75x when
+// leveling also drove crit - now leveling is pure output, crit moved
+// entirely to the Crit Tower evolution and the account-wide Crit Chance/
+// Amount upgrades, see CRIT_TOWER_* below).
+export const BASIC_MULT = [1, 1.5, 3, 4.5, 6, 7.5, 9, 10.5, 12, 13.5, 15]
 
 // --- Crit mechanic ---
-// A Basic's crit chance/amount are both a global base (raised by the
-// Crit Chance / Crit Amount upgrades, account-wide) plus a per-cell bonus
-// from that Basic's own level. The two level-driven bonuses are deliberately
-// different shapes: chance grows *linearly* (+1%/level, modest - it's a
-// probability), amount grows by *doubling* (up to 32x at max level - it's
-// meant to feel explosive, balanced by how expensive leveling Basic becomes).
-// Crit is resolved once per Basic per tick, baked into `base` before a Leech
-// ever reads it (deliberate: unlike BASIC_MULT, crit IS visible to Leeches -
-// see engine.ts recalculate()).
-export const CRIT_BASE_CHANCE = 0.05 // 5% with no upgrades, level 0 basic
-export const CRIT_BASE_AMOUNT = 1.5 // 1.5x with no upgrades, level 0 basic
-export const BASIC_CRIT_CHANCE_PER_LEVEL = 0.01 // +1% per Basic level (max +5% at level 5)
-export const BASIC_CRIT_AMOUNT_MULT = [1, 2, 4, 8, 16, 32] // multiplies CRIT_BASE_AMOUNT; index = level
+// A Basic's crit chance/amount are both a global base (raised by the Crit
+// Chance / Crit Amount upgrades, account-wide). Alpha 0.31: leveling a
+// Basic no longer touches crit at all - the only per-cell crit source now
+// is evolving into a Crit Tower (see CRIT_TOWER_* below), a one-time,
+// much bigger bump instead of a small one every level.
+export const CRIT_BASE_CHANCE = 0.05 // 5% with no upgrades
+export const CRIT_BASE_AMOUNT = 1.5 // 1.5x with no upgrades
+
+// --- Crit Tower (Basic evolution) ---
+// Additive to crit chance, multiplicative on crit amount - deliberately
+// asymmetric (confirmed with the user): chance stays bounded reasonably
+// (a probability), amount is meant to feel explosive since only up to 5 of
+// these can ever exist (see POWER_CORE_UPGRADE_MAX_LEVEL.critTowerSlots).
+export const CRIT_TOWER_CHANCE_BONUS = 0.3 // +30 percentage points, additive with base + the Crit Chance upgrade
+export const CRIT_TOWER_AMOUNT_MULT = 100 // x100, multiplicative on top of base + the Crit Amount upgrade
+
+// --- Basic Steady Tower (the other Basic evolution) ---
+// Pure private output multiplier, on top of whatever level multiplier the
+// cell already had when it evolved (always BASIC_MULT's max, 15x, since a
+// Basic must be fully leveled before it can evolve).
+export const STEADY_TOWER_MULT = 10
 
 // Display label for a Leech's range at each level. Index = level.
 export const LEECH_RANGE_LABEL = ['Orthogonal (4 cells)', 'Moore (8 cells)', 'Whole board']
 
-// Buffs fire (advance buffAccum) every N ticks.
-export const BUFF_TICK_INTERVAL = 5
+// --- Buff (single unified type, replaces the old Buff V1/V2 split) ---
+// Alpha 0.31: buffs are no longer a time-accumulating mechanic (no more
+// "fires every N ticks" - see the removed BUFF_TICK_INTERVAL/buffAccum).
+// A Buff is a live percentage multiplier on its target's own output
+// (`final`) - a nearby Leech steals a share of that boosted output too,
+// since Leech reads `final` now, not the pre-Buff `base` (this superseded
+// an earlier version of this comment which said the opposite - see
+// BASIC_MULT above and engine.ts recalculate()). 10 levels, 10% -> 100%,
+// shared by the base Buff, a Buff Stacker acting as an ordinary buff, and
+// Buff All (board-wide
+// instead of 1-target) - one table, three consumers, see engine.ts
+// resolveBuffMultipliers.
+export const BUFF_PCT_PER_LEVEL = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
-// --- Buff V1 (directional) vs Buff V2 (whole board) ---
-// V1's levels buy coverage, not power: level 0 hits the single faced cell,
-// level 1 also hits the opposite side, level 2 hits all 4 sides - power per
-// hit never changes. V2 always hits every Basic on the board; its levels buy
-// power instead, since coverage is already maximal from level 0.
-// Buff power scales with the account-wide value Buffs target (see
-// upgrades.ts buffScalingBaseValue: a Basic's base value before buffAccum,
-// i.e. BASIC_BASE_VALUE + Basic Generator Value bonus, times Generator
-// Value %) rather than a hardcoded flat number - a flat +1 every firing
-// becomes proportionally meaningless once that base is pushed into the
-// millions by other upgrades, which is exactly what made buffs feel
-// pointless later on. Floored at MIN_BUFF_POWER_PER_FIRING so a firing is
-// never worse than the original flat-1 behaviour was, early on when the
-// scaling base is still small.
-export const BUFF_V1_PCT_PER_FIRING = 0.005 // 0.5% of the scaling base, per firing, per targeted side - level only buys coverage, not rate
-export const BUFF_V2_PCT_PER_FIRING = [0.005, 0.01, 0.02, 0.04, 0.08] // index = level; 0.5% -> 8% of the scaling base, per firing, applied to every Basic
-export const MIN_BUFF_POWER_PER_FIRING = 1
-
-// powerCoreGenerator's cost is denominated in power cores, not energy - see
-// economy.ts currencyFor(). Kept modest since power cores are slow to earn,
-// especially early (the whole tab is gated behind unlockPowerCoreGenerator
-// anyway - see powerCoreUpgrades.ts).
-export const BASE_COST = { basic: 10, leech: 100, buffV1: 250, buffV2: 5000, powerCoreGenerator: 5 }
-export const COST_GROWTH = 1.15 // placement cost = base * growth^(count already placed)
+// powerCoreGenerator's placement has no price of its own - see
+// economy.ts/upgrades.ts powerGeneratorCount, which both gates and pays for
+// each one. BASE_COST below covers only the types placeCell actually charges
+// for at placement time.
+export const BASE_COST = { basic: 20, leech: 1000, buff: 2000 }
+export const COST_GROWTH = 2.0 // placement cost = base * growth^(count already placed) - Basic/Leech/Buff only
 
 // Per-type upgrade cost growth (cost to go from `level` to `level+1` = base *
-// growth^level). Leech's stays at the original 2.5 - "Leech stays the same as
-// it is now". Basic's is deliberately steep: 5 levels buys up to a 32x crit
-// multiplier, so the climb has to hurt.
-export const UPGRADE_COST_GROWTH = { basic: 15, leech: 2.5, buffV1: 4, buffV2: 6, powerCoreGenerator: 3 }
+// growth^level, where `base` is BASE_COST[type] for Basic/Leech/Buff, or
+// POWER_CORE_GENERATOR_LEVEL_BASE_COST for the Power Core Generator, which
+// has no BASE_COST entry of its own since its placement is free - see above).
+// Leech's stays at the original 2.5 - "Leech stays the same as it is now".
+// basic/buff are balance placeholders, tunable without touching any other
+// logic - basic needs to support double the old level count (10, not 5) at
+// a much gentler per-level payout (flat +1.5x, not a crit multiplier), buff
+// is meant to be "deliberately expensive" per the design.
+export const UPGRADE_COST_GROWTH = { basic: 3, leech: 2.5, buff: 4, powerCoreGenerator: 2 }
+
+// The Power Core Generator's own per-cell level-up base cost (period 5->1
+// across its 4 levels) - Power-Core-priced, doubling per level via
+// UPGRADE_COST_GROWTH.powerCoreGenerator above (10 -> 20 -> 40 -> 80).
+export const POWER_CORE_GENERATOR_LEVEL_BASE_COST = 10
 
 // Removing a generator refunds this fraction of what was actually paid to
 // place it (not counting any upgrades since - see Cell.placementCost). The
-// Removal Refund upgrade raises this, up to 1 (100%) - see upgrades.ts.
+// Removal Refund upgrade raises this, up to 1 (100%) - see upgrades.ts. Only
+// ever applies to Energy-priced placements (Basic/Leech/Buff) - the Power
+// Core Generator refunds nothing on removal (see economy.ts removeRefund).
 export const REMOVE_REFUND_FRACTION = 0.5
 
 // Not in the spec: with costs added in Phase 3 and no way to earn currency
@@ -133,6 +164,7 @@ export const UPGRADE_MAX_LEVEL: UpgradeLevels = {
   critAmount: 10,
   removalRefund: 10,
   gridSize: 3,
+  powerGeneratorCount: 5,
 }
 
 export const TICK_SPEED_MS_PER_LEVEL = 10 // -0.01s per level, 1.00s -> 0.75s at level 25
@@ -163,99 +195,65 @@ export const UPGRADE_COST: Record<UpgradeId, ExponentialCurve | QuadraticCurve> 
   // upgrade's effect, more room for generators) - priced to match the other
   // upgrades' total cost to max out, not their per-level cost.
   gridSize: { kind: 'exponential', baseCost: 100_000, growth: 15 },
+  // This upgrade's cost IS the Power Core Generator's placement cost, not a
+  // separate gate on top of one - buying level N is simultaneously "affording
+  // your Nth generator" (confirmed with the user). Level 1 = 1,000,000,
+  // doubling every level after (1M -> 2M -> 4M -> 8M -> 16M).
+  powerGeneratorCount: { kind: 'exponential', baseCost: 1_000_000, growth: 2 },
 }
 
 // --- Power Cores: a second resource with its own meta-progression menu
 // (account-wide, purchased with power cores - see game/powerCoreUpgrades.ts).
-// Five of its nine upgrades (tickSpeed/basicValue/critChance/critAmount/
-// gridSize) mirror an existing Energy upgrade by name but are fully
-// independent counters that STACK with the energy version - see
-// game/upgrades.ts for exactly how each one combines. ---
+// Alpha 0.31: produced exclusively by the Power Core Generator (no more
+// exponent-threshold awards or Power Core Chance procs), and this tab is
+// down to 5 upgrades - Grid Size (still combines additively with its energy
+// counterpart, see game/upgrades.ts totalGridSizeLevel) plus 4 independent
+// build-count-cap upgrades, one per evolution type. Every upgrade that used
+// to combine with an Energy upgrade by name (Tick Speed/Basic Generator
+// Value/Crit Chance/Crit Amount) is gone from this side - those stats are
+// Energy-only now. ---
 
 // Power Core Generator: production is discrete (a proc every `period`
 // ticks, period = BASE - level), not continuous like a Basic - each
 // generator's period depends on its own level, since every placed one is
-// leveled independently (confirmed with the user, not a shared timer the
-// way Buffs use one global BUFF_TICK_INTERVAL).
-export const POWER_CORE_GENERATOR_BASE_TICKS = 10
-export const POWER_CORE_GENERATOR_TICKS_PER_LEVEL = 1 // 10 -> 6 ticks across levels 0-4
+// leveled independently. Alpha 0.31: period 5 -> 1 (was 10 -> 6) - the
+// Power Core Amount upgrade that used to scale output per proc is gone, so
+// every proc is worth exactly 1 core before any Buff multiplier.
+export const POWER_CORE_GENERATOR_BASE_TICKS = 5
+export const POWER_CORE_GENERATOR_TICKS_PER_LEVEL = 1 // 5 -> 1 tick across levels 0-4
 
-// A generator's own level only sets its speed (above) - the AMOUNT it (and
-// every other power-core source) produces per proc is entirely driven by
-// the shared Power Core Amount upgrade below.
-export const POWER_CORE_AMOUNT_BASE = 1
-export const POWER_CORE_AMOUNT_PER_LEVEL = 1 // 1 -> 100 cores/proc across levels 0-99
-
-// Power Core Chance: a Basic or Leech's chance to ALSO produce a power core
-// on a tick it produces energy - purely upgrade-driven (no per-cell-level
-// term the way energy crit has), and each cell rolls independently (not
-// inherited through `base` the way crit is - see engine.ts rollPowerCoreProcs).
-export const POWER_CORE_CHANCE_BASE = 0
-export const POWER_CORE_CHANCE_PER_LEVEL = 0.005 // +0.5%/level, max 12.5% at level 25
-
-// Reduces every 10^n energy threshold that awards a power core (see
-// stats.ts checkPowerCoreExponents), e.g. 100 -> 99 at level 1, -> 75 at
-// level 25 (25% off, uniformly across every threshold).
-export const POWER_CORE_REDUCTION_PER_LEVEL = 0.01 // max 25% at level 25
-
-// --- Combined stacking for the 5 upgrades power cores share a name with -
-// each COMBINES with its energy counterpart per a different rule, confirmed
-// with the user per-stat (see game/upgrades.ts for the actual formulas):
-// tickSpeed and critAmount stack MULTIPLICATIVELY; basicValue, critChance,
-// and gridSize stack ADDITIVELY. ---
-export const PC_TICK_SPEED_PCT_PER_LEVEL = 0.01 // -1%/level, multiplicative on top of energy's tick speed
-export const PC_BASIC_VALUE_PER_LEVEL = 1 // +1/level, additive with energy's Basic Generator Value
-export const PC_CRIT_CHANCE_PER_LEVEL = 0.01 // +1%/level, additive with energy's Crit Chance
-export const PC_CRIT_AMOUNT_PCT_PER_LEVEL = 0.1 // +10%/level, multiplicative on top of energy's Crit Amount
 export const PC_GRID_SIZE_PER_LEVEL = 1 // +1/level, additive with energy's Grid Size
 
 export const POWER_CORE_UPGRADE_MAX_LEVEL: PowerCoreUpgradeLevels = {
-  powerCoreReduction: 25,
-  powerCoreAmount: 99,
-  powerCoreChance: 25,
-  unlockPowerCoreGenerator: 1, // one-shot unlock, not a leveled stat - see powerCoreUpgrades.ts
-  tickSpeed: 25,
-  basicValue: 999_999,
-  critChance: 25,
-  critAmount: 25,
   gridSize: 3,
+  critTowerSlots: 5,
+  basicSteadySlots: 5,
+  buffStackerSlots: 5,
+  buffAllSlots: 5,
 }
 
-// Power-core upgrades originally used FLAT fixed pricing (same cost every
-// level). Reworked to an escalating curve instead - the same two shapes
-// Energy's own upgrades use (see UPGRADE_COST above) - after two flat bumps
-// in a row still weren't enough: flat pricing is structurally the wrong
-// shape here, since power core INCOME itself keeps growing as energy grows
-// (exponent-threshold awards compound the same way energy does), so any
-// fixed flat price eventually becomes trivial again once income scales past
-// it - confirmed by the user sitting on 250k+ power cores "without doing
-// much." An escalating curve keeps pace automatically instead of needing
-// another manual bump every time income jumps.
-//
-// Most upgrades (max level 25) use exponential growth=1.5, tuned so 250k
-// power cores buys roughly 3/4 of the levels, not all of them - real
-// progress, not an instant max. powerCoreAmount (max 99 - the single
-// strongest lever, since it multiplies every power-core source at once) and
-// basicValue (max 999,999, mirrors Energy's own quadratic-curve basicValue)
-// both use the quadratic shape instead, the same way Energy's own
-// long-tail/bulk-buy upgrades do - see upgrades.ts bulkUpgradeCost() for the
-// closed-form math this relies on (powerCoreUpgrades.ts's own pcBulkUpgradeCost
-// duplicates it for this table). gridSize (max 3, the single biggest-ticket
-// item in either tab) matches Energy's own gridSize curve's order of
-// magnitude on purpose - both are the one upgrade meant to be a multi-
-// million-power-core commitment. unlockPowerCoreGenerator only ever buys its
-// one level, so growth is moot there - baseCost is the whole price.
+// All 5 upgrades use the escalating exponential shape (see UPGRADE_COST
+// above) - gridSize keeps its existing curve (the single biggest-ticket
+// item in either tab, unchanged from Alpha 0.3). The 4 evolution slot
+// upgrades are new: base 1,000, x10 per level (confirmed with the user -
+// "of course it grows," tunable down later if it lands too steep) - 1,000
+// -> 10,000 -> 100,000 -> 1,000,000 -> 10,000,000 across their 5 levels.
 export const POWER_CORE_UPGRADE_COST: Record<PowerCoreUpgradeId, ExponentialCurve | QuadraticCurve> = {
-  unlockPowerCoreGenerator: { kind: 'exponential', baseCost: 500, growth: 2 },
-  powerCoreReduction: { kind: 'exponential', baseCost: 50, growth: 1.5 },
-  powerCoreChance: { kind: 'exponential', baseCost: 80, growth: 1.5 },
-  tickSpeed: { kind: 'exponential', baseCost: 100, growth: 1.5 },
-  critChance: { kind: 'exponential', baseCost: 80, growth: 1.5 },
-  critAmount: { kind: 'exponential', baseCost: 120, growth: 1.5 },
-  powerCoreAmount: { kind: 'quadratic', coefficient: 15 },
-  basicValue: { kind: 'quadratic', coefficient: 25 },
   gridSize: { kind: 'exponential', baseCost: 200_000, growth: 10 },
+  critTowerSlots: { kind: 'exponential', baseCost: 1_000, growth: 10 },
+  basicSteadySlots: { kind: 'exponential', baseCost: 1_000, growth: 10 },
+  buffStackerSlots: { kind: 'exponential', baseCost: 1_000, growth: 10 },
+  buffAllSlots: { kind: 'exponential', baseCost: 1_000, growth: 10 },
 }
+
+// --- Evolution conversion (see game/economy.ts canEvolve/evolveCell) ---
+// Converting a maxed plain Basic/Buff into its evolved form costs Power
+// Cores, separately from the slot upgrade above that governs how many are
+// allowed to exist at all. Doubles per additional evolved instance of that
+// specific type, based on the CURRENT on-board count (removing one drops
+// the next conversion back down - confirmed with the user) - not a table,
+// computed in code: base * 2^count.
+export const EVOLUTION_CONVERSION_BASE_COST = 5000
 
 // Achievement tier thresholds, one array per category (src/game/stats.ts).
 // Every category has exactly 10 tiers - the Achievements tab shows one
@@ -268,7 +266,12 @@ export const ACHIEVEMENT_TIMES_LEVELED = [1, 5, 10, 25, 50, 100, 250, 500, 1000,
 export const ACHIEVEMENT_CURRENCY_FARMED = [1e3, 1e4, 1e5, 1e6, 1e7, 1e9, 1e12, 1e15, 1e18, 1e21]
 export const ACHIEVEMENT_HIGHEST_BASIC = [10, 100, 1e3, 1e4, 1e5, 1e6, 1e9, 1e12, 1e15, 1e18]
 export const ACHIEVEMENT_HIGHEST_LEECH = [10, 100, 1e3, 1e4, 1e5, 1e6, 1e9, 1e12, 1e15, 1e18]
-// Combined levels across every Buff (V1 + V2) currently on the board, not a
-// single buff's own level - a lone buff only goes up to level 2 or 4, nowhere
-// near enough range for 10 real tiers. See stats.ts updateHighestValues().
-export const ACHIEVEMENT_BUFF_LEVEL = [1, 2, 4, 6, 10, 15, 20, 30, 50, 75]
+// Combined levels across every buff-type cell on the board (Buff, Buff
+// Stacker, and Buff All alike - a single one only goes up to level 9,
+// nowhere near enough range for 10 real tiers on its own). See stats.ts
+// updateHighestValues(). Retuned for Alpha 0.31's 0-9 per-buff range (was
+// 0-2/0-4 under the old Buff V1/V2 split) - tier 3 (9) lands on "exactly one
+// maxed buff" as a natural early milestone, the rest scale up assuming
+// several buffs stacking. A balance placeholder like everything else new
+// this pass - not confirmed with the user, easy to retune.
+export const ACHIEVEMENT_BUFF_LEVEL = [2, 5, 9, 18, 30, 45, 65, 90, 130, 180]

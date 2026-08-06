@@ -12,6 +12,26 @@ export interface DevLogEntry {
 
 export const DEV_LOG: DevLogEntry[] = [
   {
+    version: 'Alpha 0.31',
+    date: '2026-08-06',
+    summary: 'Basic and Buff towers can now evolve, Leech steals what a cell actually produces instead of a pre-multiplier number, and a big pass on the Build/Upgrades/Power Cores UI.',
+    changes: [
+      'Basic now levels up to 10 (was 5) as a pure private output multiplier - leveling no longer touches crit at all.',
+      'New: evolve a maxed Basic into a Crit Tower (+30 percentage points crit chance, x100 crit amount) or a Basic Steady Tower (a flat x10 output multiplier). Evolving costs Power Cores and needs a slot bought in the Power Cores tab first; no further leveling once evolved.',
+      'Buff V1 and Buff V2 are merged into one Buff type: 10 levels, 10%-100%, boosts the one cell it faces by that percentage. Targets Basic, Leech, or the Power Core Generator now, not just Basic.',
+      'New: evolve a maxed Buff into a Buff Stacker (pointed at another Buff/Buff All, multiplies its effective boost instead of acting as its own separate buff - chains to any depth) or a Buff All (boosts every cell on the board at once, no facing needed). Same slot/Power Core cost pattern as the Basic evolutions.',
+      "Leech now steals a share of what a nearby cell actually PRODUCES - level multiplier, evolution, and any Buff on it all included - instead of a pre-multiplier account-wide number. A Leech next to a buffed, maxed generator now sees the whole thing.",
+      'Power Core Generator: faster at every level (5 ticks/proc down to 1, was 10 down to 6). Placing one is now free - the new Power Generator Count upgrade (Upgrades tab, Energy-priced) both raises how many you can have and pays for them; leveling an already-placed one up still costs Power Cores.',
+      'Power Cores tab rebuilt: Grid Size plus 4 independent slot upgrades, one per evolution type, each capping how many of that evolved tower you can have on the board. Power Cores now come exclusively from the Power Core Generator - the old exponent-award and Power Core Chance mechanics are gone.',
+      'Placement cost now grows a flat 2x per copy for Basic/Leech/Buff (was 1.15x); starting prices and starting Energy bumped to match.',
+      'New: every placeable type\'s build button shows "???" until you\'ve had enough to afford one at least once - a one-time reveal, never re-hidden after.',
+      'Grid cells now show real tower names instead of letter glyphs, and a crit now floats a number up from the cell and fades instead of a static corner badge.',
+      'Build tab redone as a scrollable list (matching Upgrades) with a colour swatch, name, description, and cost per row; the selected cell\'s detail view is reordered (name, then Upgrade/Remove/Evolve, then Stats) and both action buttons are now full-width and stacked so a long cost string can\'t shove them around.',
+      'Upgrades and Power Cores tabs: every row now shows the effect it currently has at its level (not just the level number), and the old x1/x10/x100 buttons on every row are replaced by one x1/x10/x25/Max toggle pinned to the top of the tab.',
+      'New setting: hide the Build tab\'s per-type descriptions if they feel too long - they move to the hover tooltip instead of disappearing.',
+    ],
+  },
+  {
     version: 'Alpha 0.3',
     date: '2026-08-05',
     summary: 'A second resource - Power Cores - plus a rebalance pass and a batch of bug fixes.',

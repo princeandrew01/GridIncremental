@@ -1,12 +1,23 @@
 import Decimal from 'break_infinity.js'
 
-export type CellType = 'empty' | 'basic' | 'leech' | 'buffV1' | 'buffV2' | 'powerCoreGenerator'
+export type CellType =
+  | 'empty'
+  | 'basic'
+  | 'leech'
+  | 'buff'
+  | 'buffStacker'
+  | 'buffAll'
+  | 'basicCrit'
+  | 'basicSteady'
+  | 'powerCoreGenerator'
 
-// Deviation from the original spec's "buff hits all 4 orthogonal neighbours":
-// a Buff V1 targets 1 (level 0), 2 (level 1, opposite pair), or all 4 (level
-// 2) cells depending on its own level - `facing` records the player's chosen
-// side/axis, rotatable in place. Meaningless on buffV2 (always whole-board)
-// and everything else.
+// `facing` records which side a directional cell currently targets,
+// rotatable in place by the player. Used by `buff` (targets 1 adjacent
+// cell) and `buffStacker` (same - it just also special-cases what happens
+// when that target is itself a buff-type cell, see engine.ts). Meaningless
+// on `buffAll` (always whole-board, no target), the two Basic evolutions
+// (`basicCrit`/`basicSteady` - private per-cell bonuses, nothing to aim),
+// `powerCoreGenerator`, and everything else.
 export type Facing = 'up' | 'down' | 'left' | 'right'
 
 // Account-wide upgrade levels, purchased from the Upgrades tab - distinct
@@ -22,6 +33,7 @@ export type UpgradeId =
   | 'critAmount'
   | 'removalRefund'
   | 'gridSize'
+  | 'powerGeneratorCount'
 
 export type UpgradeLevels = Record<UpgradeId, number>
 
@@ -34,59 +46,51 @@ export function makeEmptyUpgradeLevels(): UpgradeLevels {
     critAmount: 0,
     removalRefund: 0,
     gridSize: 0,
+    powerGeneratorCount: 0,
   }
 }
 
 // The Power Core Menu's upgrade track - a fully separate currency/counter
 // from the energy UpgradeLevels above, purchased with power cores (see
-// game/powerCoreUpgrades.ts). Deliberately distinct id strings even where
-// the concept overlaps with an energy upgrade (tickSpeed, basicValue,
-// critChance, critAmount, gridSize) - two independent level counters that
-// only combine at the effect-accessor level (game/upgrades.ts), never
-// confused in storage or save data.
-export type PowerCoreUpgradeId =
-  | 'powerCoreReduction'
-  | 'powerCoreAmount'
-  | 'powerCoreChance'
-  | 'unlockPowerCoreGenerator'
-  | 'tickSpeed'
-  | 'basicValue'
-  | 'critChance'
-  | 'critAmount'
-  | 'gridSize'
+// game/powerCoreUpgrades.ts). As of Alpha 0.31 this is down to 5 ids: Grid
+// Size (the one survivor that still combines with its energy counterpart -
+// see game/upgrades.ts totalGridSizeLevel) plus 4 independent build-count
+// caps, one per evolution type, each capping how many of that evolved
+// tower can exist on the board at once (see game/economy.ts canEvolve).
+export type PowerCoreUpgradeId = 'gridSize' | 'critTowerSlots' | 'basicSteadySlots' | 'buffStackerSlots' | 'buffAllSlots'
 
 export type PowerCoreUpgradeLevels = Record<PowerCoreUpgradeId, number>
 
 export function makeEmptyPowerCoreUpgradeLevels(): PowerCoreUpgradeLevels {
   return {
-    powerCoreReduction: 0,
-    powerCoreAmount: 0,
-    powerCoreChance: 0,
-    unlockPowerCoreGenerator: 0,
-    tickSpeed: 0,
-    basicValue: 0,
-    critChance: 0,
-    critAmount: 0,
     gridSize: 0,
+    critTowerSlots: 0,
+    basicSteadySlots: 0,
+    buffStackerSlots: 0,
+    buffAllSlots: 0,
   }
 }
 
 export interface Cell {
   type: CellType
-  level: number // basic 0-5, leech 0-2, buffV1 0-2, buffV2 0-4, powerCoreGenerator 0-4; meaningless when type is 'empty'
-  buffAccum: Decimal // basics only; accumulated buff bonus. Stored, not derived.
-  facing: Facing // buffV1 only; meaningless otherwise
+  // basic 0-10, leech 0-2, buff 0-9, powerCoreGenerator 0-4; always 0 for
+  // buffStacker/buffAll/basicCrit/basicSteady - evolved cells don't level
+  // further (for now - see _working/ALPHA_0.31_CHANGES.md "Deferred").
+  // Meaningless when type is 'empty'.
+  level: number
+  facing: Facing // buff/buffStacker only; meaningless otherwise
   // The cost actually paid to place this generator - stored per-cell since
   // placement cost escalates with how many of that type are already on the
   // board, so it can't be recomputed later. Powers the Remove refund
   // (economy.ts), which also reads the account-wide Removal Refund upgrade;
-  // meaningless when type is 'empty'.
+  // meaningless when type is 'empty'. An evolved cell inherits whatever its
+  // pre-evolution self already had here - evolving doesn't re-place it.
   placementCost: Decimal
   // powerCoreGenerator only: ticks accumulated since its last core, 0 to
-  // (period - 1) where period = 10 - level (see config.ts). Production is
+  // (period - 1) where period = 5 - level (see config.ts). Production is
   // discrete (a proc every `period` ticks), not continuous like a Basic -
   // each generator's period depends on its own level, so this can't be
-  // driven by a single shared counter the way Buff firings are.
+  // driven by a single shared counter.
   coreProgress: number
 }
 
@@ -101,22 +105,25 @@ export interface GameState {
   upgrades: UpgradeLevels // account-wide, energy-purchased, see game/upgrades.ts
 
   // --- Power Cores: a second resource, its own meta-progression menu, see
-  // game/powerCoreUpgrades.ts. ---
+  // game/powerCoreUpgrades.ts. As of Alpha 0.31, produced exclusively by the
+  // Power Core Generator - no other source. ---
   powerCores: Decimal
   powerCoreUpgrades: PowerCoreUpgradeLevels
   // Energy earned since this run started - identical to lifetimeCurrencyEarned
   // for now (there's no prestige yet to diverge them), but is the field a
   // future prestige reset would zero out; lifetimeCurrencyEarned never resets.
-  // Power core exponent awards (game/stats.ts checkPowerCoreExponents) are
-  // based on this, not lifetimeCurrencyEarned, so a prestige can "start over"
-  // the 100/1000/10000/... progression.
+  // Kept as a plain stat (Stats tab) even though nothing mechanical reads it
+  // as of Alpha 0.31 - sets up for prestige later.
   currentRunEnergyEarned: Decimal
   // Best currentRunEnergyEarned ever reached, across all runs - persists
   // through a future prestige reset unlike currentRunEnergyEarned itself.
   bestRunEnergyEarned: Decimal
-  // How many 10^n energy thresholds (100, 1000, 10000, ...) have already
-  // granted a power core this run - see checkPowerCoreExponents.
-  powerCoreExponentsAwarded: number
+
+  // Every placeable type's build button hides its real name/description
+  // ("???") until the player has, at some point, had enough Energy to
+  // afford placing one - a one-time, permanent-once-crossed discovery per
+  // type, not re-hidden if the balance drops back below the cost later.
+  discoveredTypes: Partial<Record<Exclude<CellType, 'empty'>, true>>
 
   // --- Lifetime tracking, for the Stats/Achievements tabs. Stored, not
   // derived: history (playtime, past highs, past totals) can't be
@@ -134,14 +141,23 @@ export interface GameState {
 
 /** Per-cell computed values for a single tick. Never stored, always recomputed. */
 export interface TickResult {
+  // For a Basic-family cell, `base` is the raw pre-level, pre-Buff, crit-
+  // inclusive value (a display/diagnostic figure - the panel's "Base (no
+  // crit)" row); `final` is what it actually produces (level/evolution
+  // multiplier and any Buff included). For a Leech, `base` is its own
+  // pre-cascading collection from nearby non-Leech cells and `final` adds
+  // what other Leeches in range also contribute - a Leech steals a share of
+  // what a cell actually PRODUCES (`final`), not its pre-multiplier `base` -
+  // see engine.ts recalculate() for the full pass breakdown.
   base: Decimal[]
   final: Decimal[]
   production: Decimal
-  crits: boolean[] // whether each cell's base included a crit this evaluation - basics only, false elsewhere
-  // Power cores: a full parallel to base/final/production above. basePowerCores
-  // is a Basic/Leech's power-core proc value, plus a powerCoreGenerator's own
-  // (discrete, proc-tick-only) output; finalPowerCores adds what a Leech
-  // steals, same two-pass shape as the energy pipeline - see engine.ts.
+  crits: boolean[] // whether each cell's base included a crit this evaluation - basics/evolved-basics only, false elsewhere
+  // Power cores: a full parallel to base/final/production above.
+  // basePowerCores is a powerCoreGenerator's own raw per-proc amount (pre-
+  // Buff); finalPowerCores is its actual output (Buff included) for a
+  // generator, or a Leech's own power-core collection/cascade, same
+  // base/final relationship as the energy fields above.
   basePowerCores: Decimal[]
   finalPowerCores: Decimal[]
   powerCoreProduction: Decimal
@@ -151,7 +167,6 @@ export function emptyCell(): Cell {
   return {
     type: 'empty',
     level: 0,
-    buffAccum: new Decimal(0),
     facing: 'up',
     placementCost: new Decimal(0),
     coreProgress: 0,
@@ -175,7 +190,7 @@ export function makeGameState(width: number, height: number): GameState {
     powerCoreUpgrades: makeEmptyPowerCoreUpgradeLevels(),
     currentRunEnergyEarned: new Decimal(0),
     bestRunEnergyEarned: new Decimal(0),
-    powerCoreExponentsAwarded: 0,
+    discoveredTypes: {},
     startedAt: now,
     prestigeStartedAt: now,
     activePlayMs: 0,

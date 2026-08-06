@@ -1,55 +1,37 @@
 import Decimal from 'break_infinity.js'
 import type { GameState, PowerCoreUpgradeId } from './types'
 import { resizeGrid } from './types'
-import {
-  POWER_CORE_UPGRADE_MAX_LEVEL,
-  POWER_CORE_UPGRADE_COST,
-  POWER_CORE_REDUCTION_PER_LEVEL,
-  POWER_CORE_AMOUNT_PER_LEVEL,
-  POWER_CORE_CHANCE_PER_LEVEL,
-  PC_TICK_SPEED_PCT_PER_LEVEL,
-  PC_BASIC_VALUE_PER_LEVEL,
-  PC_CRIT_CHANCE_PER_LEVEL,
-  PC_CRIT_AMOUNT_PCT_PER_LEVEL,
-  PC_GRID_SIZE_PER_LEVEL,
-} from './config'
+import { POWER_CORE_UPGRADE_MAX_LEVEL, POWER_CORE_UPGRADE_COST, PC_GRID_SIZE_PER_LEVEL } from './config'
 import { totalGridSizeLevel, gridSizeForLevel } from './upgrades'
 
-// Match the order the user listed these in.
-export const POWER_CORE_UPGRADE_IDS: PowerCoreUpgradeId[] = [
-  'powerCoreReduction',
-  'powerCoreAmount',
-  'powerCoreChance',
-  'unlockPowerCoreGenerator',
-  'tickSpeed',
-  'basicValue',
-  'critChance',
-  'critAmount',
-  'gridSize',
-]
+// Alpha 0.31: down to 5 ids. Grid Size is the one survivor from the old
+// combined-with-Energy set (still stacks additively - see upgrades.ts
+// totalGridSizeLevel); the other 4 are new build-count-cap upgrades, one
+// per evolution type, unrelated to the old power-core-only stats they
+// replaced (Power Core Reduction/Amount/Chance, the old flat unlock, and
+// the Power Core side of Tick Speed/Basic Value/Crit Chance/Crit Amount -
+// all removed entirely, see config.ts).
+export const POWER_CORE_UPGRADE_IDS: PowerCoreUpgradeId[] = ['gridSize', 'critTowerSlots', 'basicSteadySlots', 'buffStackerSlots', 'buffAllSlots']
 
 export const POWER_CORE_UPGRADE_LABEL: Record<PowerCoreUpgradeId, string> = {
-  powerCoreReduction: 'Power Core Reduction',
-  powerCoreAmount: 'Power Core Amount',
-  powerCoreChance: 'Power Core Chance',
-  unlockPowerCoreGenerator: 'Unlock Power Core Generator',
-  tickSpeed: 'Tick Speed',
-  basicValue: 'Basic Generator Value',
-  critChance: 'Crit Chance',
-  critAmount: 'Crit Amount',
   gridSize: 'Grid Size',
+  critTowerSlots: 'Crit Tower Slots',
+  basicSteadySlots: 'Basic Steady Slots',
+  buffStackerSlots: 'Buff Stacker Slots',
+  buffAllSlots: 'Buff All Slots',
 }
 
 export const POWER_CORE_UPGRADE_DESCRIPTION: Record<PowerCoreUpgradeId, string> = {
-  powerCoreReduction: `-${POWER_CORE_REDUCTION_PER_LEVEL * 100}% off every power core energy threshold.`,
-  powerCoreAmount: `+${POWER_CORE_AMOUNT_PER_LEVEL} power core(s) per proc - exponent awards, Power Core Chance, and the Power Core Generator all read this.`,
-  powerCoreChance: `+${POWER_CORE_CHANCE_PER_LEVEL * 100}% chance for an energy-producing generator to also produce a power core.`,
-  unlockPowerCoreGenerator: 'Unlocks the Power Core Generator in the Build tab.',
-  tickSpeed: `-${PC_TICK_SPEED_PCT_PER_LEVEL * 100}% tick length, multiplicative on top of Energy's Tick Speed.`,
-  basicValue: `+${PC_BASIC_VALUE_PER_LEVEL} to every Basic's base value, additive with Energy's Basic Generator Value.`,
-  critChance: `+${PC_CRIT_CHANCE_PER_LEVEL * 100}% crit chance, additive with Energy's Crit Chance.`,
-  critAmount: `+${PC_CRIT_AMOUNT_PCT_PER_LEVEL * 100}% crit amount, multiplicative on top of Energy's Crit Amount.`,
   gridSize: `+${PC_GRID_SIZE_PER_LEVEL} to both grid dimensions, additive with Energy's Grid Size.`,
+  critTowerSlots: 'Each level allows one more Crit Tower (a maxed Basic evolved for +30 percentage points crit chance and x100 crit amount) on the board at once.',
+  basicSteadySlots: 'Each level allows one more Basic Steady Tower (a maxed Basic evolved for a x10 output multiplier) on the board at once.',
+  buffStackerSlots: 'Each level allows one more Buff Stacker (a maxed Buff evolved to multiply another Buff/Buff All it targets) on the board at once.',
+  buffAllSlots: 'Each level allows one more Buff All (a maxed Buff evolved to boost every cell on the board) on the board at once.',
+}
+
+/** Whether `id` is still at level 0 - the 4 evolution-slot upgrades show as "Locked" (name/description hidden) until at least 1 level is bought; Grid Size never does, it's not gated behind anything. */
+export function isPowerCoreUpgradeLocked(state: GameState, id: PowerCoreUpgradeId): boolean {
+  return id !== 'gridSize' && state.powerCoreUpgrades[id] <= 0
 }
 
 export function pcMaxLevelFor(id: PowerCoreUpgradeId): number {

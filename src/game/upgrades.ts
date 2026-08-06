@@ -5,7 +5,6 @@ import {
   UPGRADE_MAX_LEVEL,
   UPGRADE_COST,
   TICK_SPEED_MS_PER_LEVEL,
-  BASIC_BASE_VALUE,
   BASIC_VALUE_PER_LEVEL,
   GENERATOR_VALUE_PCT_PER_LEVEL,
   CRIT_CHANCE_UPGRADE_PER_LEVEL,
@@ -14,21 +13,12 @@ import {
   GRID_SIZE_PER_LEVEL,
   TICK_MS,
   GRID_W,
-  BASIC_CRIT_CHANCE_PER_LEVEL,
-  BASIC_CRIT_AMOUNT_MULT,
   CRIT_BASE_CHANCE,
   CRIT_BASE_AMOUNT,
+  CRIT_TOWER_CHANCE_BONUS,
+  CRIT_TOWER_AMOUNT_MULT,
   REMOVE_REFUND_FRACTION,
-  PC_TICK_SPEED_PCT_PER_LEVEL,
-  PC_BASIC_VALUE_PER_LEVEL,
-  PC_CRIT_CHANCE_PER_LEVEL,
-  PC_CRIT_AMOUNT_PCT_PER_LEVEL,
   PC_GRID_SIZE_PER_LEVEL,
-  POWER_CORE_CHANCE_BASE,
-  POWER_CORE_CHANCE_PER_LEVEL,
-  POWER_CORE_AMOUNT_BASE,
-  POWER_CORE_AMOUNT_PER_LEVEL,
-  POWER_CORE_REDUCTION_PER_LEVEL,
 } from './config'
 
 export const UPGRADE_IDS: UpgradeId[] = [
@@ -39,6 +29,7 @@ export const UPGRADE_IDS: UpgradeId[] = [
   'critAmount',
   'removalRefund',
   'gridSize',
+  'powerGeneratorCount',
 ]
 
 export const UPGRADE_LABEL: Record<UpgradeId, string> = {
@@ -49,6 +40,7 @@ export const UPGRADE_LABEL: Record<UpgradeId, string> = {
   critAmount: 'Crit Amount',
   removalRefund: 'Removal Refund',
   gridSize: 'Grid Size',
+  powerGeneratorCount: 'Power Generator Count',
 }
 
 export const UPGRADE_DESCRIPTION: Record<UpgradeId, string> = {
@@ -59,6 +51,7 @@ export const UPGRADE_DESCRIPTION: Record<UpgradeId, string> = {
   critAmount: `+${CRIT_AMOUNT_UPGRADE_PER_LEVEL}x crit amount.`,
   removalRefund: `+${REMOVAL_REFUND_PER_LEVEL * 100}% currency refunded on Remove.`,
   gridSize: `+${GRID_SIZE_PER_LEVEL} to both grid dimensions.`,
+  powerGeneratorCount: 'Unlocks (and raises the cap on) the Power Core Generator - each level both allows one more and pays for it, no separate placement cost.',
 }
 
 /** The board size a given Grid Size upgrade level targets - GRID_W (the starting 4x4) plus 1 per level. */
@@ -149,61 +142,49 @@ export function buyUpgrade(state: GameState, id: UpgradeId, count: number): bool
 }
 
 // --- Effect accessors: the single source of truth every other module reads
-// (engine.ts, economy.ts, offline.ts, the UI) - no formula duplicated. Each
-// one below that has a Power Core Menu counterpart (see config.ts's PC_*
-// constants and powerCoreUpgrades.ts) combines both tracks here, per the
-// stacking rule confirmed with the user for that specific stat - additive or
-// multiplicative, never assumed uniform across all five. ---
+// (engine.ts, economy.ts, offline.ts, the UI) - no formula duplicated. ---
 
-/** Flat bonus added to every Basic's base value, from both Basic Generator Value upgrades (additive). */
+/** Flat bonus added to every Basic-family cell's base value, from the Basic Generator Value upgrade. */
 export function basicValueBonus(state: GameState): number {
-  return state.upgrades.basicValue * BASIC_VALUE_PER_LEVEL + state.powerCoreUpgrades.basicValue * PC_BASIC_VALUE_PER_LEVEL
+  return state.upgrades.basicValue * BASIC_VALUE_PER_LEVEL
 }
 
-/** Multiplier applied to every Basic's base value (and, transitively, whatever a Leech reads from it). */
+/** Multiplier applied to every Basic-family cell's base value (and, transitively, whatever a Leech reads from it). */
 export function generatorValueMultiplier(state: GameState): number {
   return 1 + state.upgrades.generatorValuePct * GENERATOR_VALUE_PCT_PER_LEVEL
 }
 
-/** Chance [0,1] that a Basic at this level crits this tick: global base + this Basic's own level bonus + both Crit Chance upgrades (additive). */
-export function critChanceFor(state: GameState, basicLevel: number): number {
-  return (
-    CRIT_BASE_CHANCE +
-    BASIC_CRIT_CHANCE_PER_LEVEL * basicLevel +
-    CRIT_CHANCE_UPGRADE_PER_LEVEL * state.upgrades.critChance +
-    PC_CRIT_CHANCE_PER_LEVEL * state.powerCoreUpgrades.critChance
-  )
+/**
+ * Chance [0,1] that a Basic-family cell crits this tick: global base + the
+ * Crit Chance upgrade (additive), plus the Crit Tower evolution's own +30
+ * percentage points if `isCritTower` (confirmed with the user - additive,
+ * "supposed to be powerful"). Alpha 0.31: a cell's own level no longer
+ * contributes anything - that moved entirely to the Crit Tower evolution.
+ */
+export function critChanceFor(state: GameState, isCritTower: boolean): number {
+  return CRIT_BASE_CHANCE + CRIT_CHANCE_UPGRADE_PER_LEVEL * state.upgrades.critChance + (isCritTower ? CRIT_TOWER_CHANCE_BONUS : 0)
 }
 
 /**
- * Multiplier applied on a crit: (global base + Energy's Crit Amount upgrade)
- * x (this Basic's own level bonus) x (Power Core's Crit Amount upgrade,
- * multiplicative on top of everything else - confirmed with the user, unlike
- * the other four shared-name upgrades which stack additively).
+ * Multiplier applied on a crit: (global base + the Crit Amount upgrade),
+ * further multiplied by x100 if `isCritTower` (confirmed with the user -
+ * multiplicative, e.g. a 5x account crit amount becomes 500x on an evolved
+ * Crit Tower). Alpha 0.31: a cell's own level no longer contributes.
  */
-export function critAmountFor(state: GameState, basicLevel: number): number {
+export function critAmountFor(state: GameState, isCritTower: boolean): number {
   const globalAmount = CRIT_BASE_AMOUNT + CRIT_AMOUNT_UPGRADE_PER_LEVEL * state.upgrades.critAmount
-  const pcMultiplier = 1 + state.powerCoreUpgrades.critAmount * PC_CRIT_AMOUNT_PCT_PER_LEVEL
-  return globalAmount * BASIC_CRIT_AMOUNT_MULT[basicLevel] * pcMultiplier
+  return isCritTower ? globalAmount * CRIT_TOWER_AMOUNT_MULT : globalAmount
 }
 
-/** Fraction of a generator's placement cost refunded on Remove, capped at 1 (100%). */
+/** Fraction of a generator's placement cost refunded on Remove, capped at 1 (100%). Only ever applies to Energy-priced placements - see economy.ts removeRefund. */
 export function refundFraction(state: GameState): number {
   return Math.min(1, REMOVE_REFUND_FRACTION + state.upgrades.removalRefund * REMOVAL_REFUND_PER_LEVEL)
 }
 
-/**
- * Effective tick length in ms. The two Tick Speed upgrades stack
- * multiplicatively (confirmed with the user): Energy's shortens the base
- * tick first, Power Core's then takes a further percentage off *that*
- * result, rather than both subtracting flat ms from the original 1000ms -
- * this can't ever reach zero, and combines cleanly if more reductions are
- * ever added later.
- */
+/** Effective tick length in ms, from the Tick Speed upgrade. */
 export function effectiveTickMs(state: GameState): number {
   const energyFraction = state.upgrades.tickSpeed * (TICK_SPEED_MS_PER_LEVEL / TICK_MS)
-  const powerCoreFraction = state.powerCoreUpgrades.tickSpeed * PC_TICK_SPEED_PCT_PER_LEVEL
-  return TICK_MS * (1 - energyFraction) * (1 - powerCoreFraction)
+  return TICK_MS * (1 - energyFraction)
 }
 
 /** Combined Grid Size level across both upgrade tracks - what actually determines the board's target size (see gridSizeForLevel). */
@@ -211,37 +192,16 @@ export function totalGridSizeLevel(state: GameState): number {
   return state.upgrades.gridSize + state.powerCoreUpgrades.gridSize * PC_GRID_SIZE_PER_LEVEL
 }
 
-/** Chance [0,1] that an energy-producing generator (Basic or Leech) also produces a power core this tick - purely upgrade-driven, no per-cell-level term, each cell rolls independently (see engine.ts rollPowerCoreProcs). */
-export function powerCoreChanceFor(state: GameState): number {
-  return POWER_CORE_CHANCE_BASE + state.powerCoreUpgrades.powerCoreChance * POWER_CORE_CHANCE_PER_LEVEL
-}
-
-/** Power cores produced per proc - shared by the exponent award, a Power Core Chance hit, and the Power Core Generator. */
-export function powerCoreAmountFor(state: GameState): number {
-  return POWER_CORE_AMOUNT_BASE + state.powerCoreUpgrades.powerCoreAmount * POWER_CORE_AMOUNT_PER_LEVEL
-}
-
-/** Fraction knocked off every 10^n energy threshold that awards a power core (see stats.ts checkPowerCoreExponents), capped at 1 so a threshold can never go to 0 or below. */
-export function powerCoreReductionFraction(state: GameState): number {
-  return Math.min(1, state.powerCoreUpgrades.powerCoreReduction * POWER_CORE_REDUCTION_PER_LEVEL)
+/**
+ * How many Power Core Generators are currently allowed on the board - the
+ * Power Generator Count upgrade both gates and pays for each one (see
+ * config.ts UPGRADE_COST.powerGeneratorCount), so there's no separate
+ * "unlocked" flag or placement price to track alongside this.
+ */
+export function powerCoreGeneratorCap(state: GameState): number {
+  return state.upgrades.powerGeneratorCount
 }
 
 export function isPowerCoreGeneratorUnlocked(state: GameState): boolean {
-  return state.powerCoreUpgrades.unlockPowerCoreGenerator >= 1
-}
-
-/**
- * The value Buffs scale off: a Basic's base value with no buffAccum yet (the
- * account-wide floor plus Basic Generator Value bonus, times Generator Value
- * %) - identical for every Basic on the board, since none of those three
- * inputs vary by cell (see engine.ts recalculate()). Buffs read this instead
- * of a hardcoded flat number so a firing stays a meaningful fraction of a
- * Basic's output as that floor grows, rather than shrinking toward
- * irrelevance the way a flat +1 every 5 ticks does once BASIC_MULT/crit/
- * Leech push real output into the millions (see engine.ts
- * buffV1PowerPerFiring/buffV2PowerPerFiring, config.ts BUFF_V1_PCT_PER_FIRING/
- * BUFF_V2_PCT_PER_FIRING).
- */
-export function buffScalingBaseValue(state: GameState): number {
-  return (BASIC_BASE_VALUE + basicValueBonus(state)) * generatorValueMultiplier(state)
+  return powerCoreGeneratorCap(state) >= 1
 }

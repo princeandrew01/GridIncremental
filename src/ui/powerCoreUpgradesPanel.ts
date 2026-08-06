@@ -7,30 +7,44 @@ import {
   POWER_CORE_UPGRADE_LABEL,
   POWER_CORE_UPGRADE_DESCRIPTION,
   pcMaxLevelFor,
-  pcUpgradeCostAt,
   pcBulkUpgradeCost,
   pcMaxAffordableCount,
+  isPowerCoreUpgradeLocked,
 } from '../game/powerCoreUpgrades'
 
 export interface PowerCoreUpgradesPanelHandle {
   update(state: GameState, formatMode: NumberFormatMode): void
 }
 
-const BUY_COUNTS = [1, 10, 100]
+// Same toolbar-driven quantity selection as ui/upgradesPanel.ts - see its
+// BuyCount comment for why this replaced the old 4-buttons-per-row layout.
+type BuyCount = 1 | 10 | 25 | 'max'
+const BUY_COUNTS: BuyCount[] = [1, 10, 25, 'max']
 
 interface RowEls {
+  name: HTMLElement
+  desc: HTMLElement
   level: HTMLElement
+  value: HTMLElement
   cost: HTMLElement
-  fixedButtons: Map<number, HTMLButtonElement>
-  maxButton: HTMLButtonElement
+  buyButton: HTMLButtonElement
+}
+
+/** How many of `id` the player currently has, in plain English - "N slot(s) allowed" for the 4 evolution-slot upgrades, or the actual board size for Grid Size (same figure the Upgrades tab shows for its own Grid Size track, since the two combine - see upgrades.ts totalGridSizeLevel). Locked slot upgrades return '' - showing even a count would weakly hint at what's behind them. */
+function currentValueText(state: GameState, id: PowerCoreUpgradeId): string {
+  if (isPowerCoreUpgradeLocked(state, id)) return ''
+  if (id === 'gridSize') return `${state.width}×${state.height}`
+  const level = state.powerCoreUpgrades[id]
+  return `${level.toLocaleString()} slot${level === 1 ? '' : 's'} allowed`
 }
 
 /**
  * The Power Core Menu: same visual shape as ui/upgradesPanel.ts (reuses its
- * .upgrade-row etc. CSS), but built against powerCoreUpgrades.ts's simpler
- * flat-cost functions instead - not sharing code with upgradesPanel.ts,
- * since every power-core upgrade is flat-priced (no exponential/quadratic
- * curve to switch on), a genuinely simpler cost model than energy's.
+ * .upgrade-row/.upgrade-toolbar etc. CSS), but built against
+ * powerCoreUpgrades.ts's functions instead of upgrades.ts's - not sharing
+ * code directly, since the two currency tracks (energy vs power cores) and
+ * their state fields are genuinely different, even though the cost-curve
+ * shape happens to be the same now.
  */
 export function createPowerCoreUpgradesPanel(
   container: HTMLElement,
@@ -43,6 +57,37 @@ export function createPowerCoreUpgradesPanel(
   container.appendChild(heading)
 
   let latestState: GameState | null = null
+  let latestFormatMode: NumberFormatMode = 'scientific'
+  let selectedCount: BuyCount = 1
+
+  /** Mirrors upgradesPanel.ts's resolveBuyCount - see its comment. */
+  function resolveBuyCount(state: GameState, id: PowerCoreUpgradeId): number {
+    const current = state.powerCoreUpgrades[id]
+    const max = pcMaxLevelFor(id)
+    if (current >= max) return 0
+    if (selectedCount === 'max') return pcMaxAffordableCount(id, current, state.powerCores)
+    return Math.min(selectedCount, max - current)
+  }
+
+  // Sticky toolbar - see upgradesPanel.ts's matching comment.
+  const toolbar = document.createElement('div')
+  toolbar.className = 'upgrade-toolbar'
+  const toolbarButtons = new Map<BuyCount, HTMLButtonElement>()
+  for (const count of BUY_COUNTS) {
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'upgrade-toolbar-button'
+    btn.textContent = count === 'max' ? 'Max' : `x${count}`
+    btn.addEventListener('click', () => {
+      selectedCount = count
+      for (const [c, b] of toolbarButtons) b.classList.toggle('upgrade-toolbar-button-active', c === count)
+      if (latestState) update(latestState, latestFormatMode)
+    })
+    toolbar.appendChild(btn)
+    toolbarButtons.set(count, btn)
+  }
+  toolbarButtons.get(1)!.classList.add('upgrade-toolbar-button-active')
+  container.appendChild(toolbar)
 
   const rows = new Map<PowerCoreUpgradeId, RowEls>()
 
@@ -54,66 +99,68 @@ export function createPowerCoreUpgradesPanel(
     info.className = 'upgrade-info'
     const name = document.createElement('div')
     name.className = 'upgrade-name'
-    name.textContent = POWER_CORE_UPGRADE_LABEL[id]
     const desc = document.createElement('div')
     desc.className = 'upgrade-description'
-    desc.textContent = POWER_CORE_UPGRADE_DESCRIPTION[id]
     const level = document.createElement('div')
     level.className = 'upgrade-level'
-    info.append(name, desc, level)
+    const value = document.createElement('div')
+    value.className = 'upgrade-current-value'
+    info.append(name, desc, level, value)
 
     const cost = document.createElement('div')
     cost.className = 'upgrade-cost'
 
-    const buyRow = document.createElement('div')
-    buyRow.className = 'upgrade-buy-row'
-
-    const fixedButtons = new Map<number, HTMLButtonElement>()
-    for (const count of BUY_COUNTS) {
-      const btn = document.createElement('button')
-      btn.type = 'button'
-      btn.className = 'upgrade-buy-button'
-      btn.textContent = `x${count}`
-      btn.addEventListener('click', () => onBuy(id, count))
-      buyRow.appendChild(btn)
-      fixedButtons.set(count, btn)
-    }
-
-    const maxButton = document.createElement('button')
-    maxButton.type = 'button'
-    maxButton.className = 'upgrade-buy-button'
-    maxButton.textContent = 'Max'
-    maxButton.addEventListener('click', () => {
+    const buyButton = document.createElement('button')
+    buyButton.type = 'button'
+    buyButton.className = 'upgrade-buy-button'
+    buyButton.addEventListener('click', () => {
       if (!latestState) return
-      const current = latestState.powerCoreUpgrades[id]
-      const n = pcMaxAffordableCount(id, current, latestState.powerCores)
-      if (n > 0) onBuy(id, n)
+      const count = resolveBuyCount(latestState, id)
+      if (count > 0) onBuy(id, count)
     })
-    buyRow.appendChild(maxButton)
 
-    row.append(info, cost, buyRow)
+    row.append(info, cost, buyButton)
     container.appendChild(row)
-    rows.set(id, { level, cost, fixedButtons, maxButton })
+    rows.set(id, { name, desc, level, value, cost, buyButton })
   }
 
   function update(state: GameState, formatMode: NumberFormatMode): void {
     latestState = state
+    latestFormatMode = formatMode
     for (const id of POWER_CORE_UPGRADE_IDS) {
       const els = rows.get(id)!
       const current = state.powerCoreUpgrades[id]
       const max = pcMaxLevelFor(id)
       const maxed = current >= max
+      // The 4 evolution-slot upgrades hide their real name/description until
+      // at least 1 level is bought ("Locked") - confirmed with the user
+      // (Grid Size is never locked, see isPowerCoreUpgradeLocked).
+      const locked = isPowerCoreUpgradeLocked(state, id)
+      els.name.textContent = locked ? 'Locked' : POWER_CORE_UPGRADE_LABEL[id]
+      els.desc.textContent = locked ? '' : POWER_CORE_UPGRADE_DESCRIPTION[id]
       els.level.textContent = `Level ${current.toLocaleString()} / ${max.toLocaleString()}`
-      els.cost.textContent = maxed ? 'Maxed' : `Next: ${format(pcUpgradeCostAt(id, current), formatMode)}`
+      const valueText = currentValueText(state, id)
+      els.value.textContent = valueText ? `Current: ${valueText}` : ''
 
-      for (const [count, btn] of els.fixedButtons) {
-        const withinCap = current + count <= max
-        btn.disabled = !withinCap || state.powerCores.lt(pcBulkUpgradeCost(id, current, count))
+      if (maxed) {
+        els.cost.textContent = 'Maxed'
+        els.buyButton.disabled = true
+        els.buyButton.textContent = 'Maxed'
+        continue
       }
 
-      const maxAffordable = pcMaxAffordableCount(id, current, state.powerCores)
-      els.maxButton.disabled = maxAffordable <= 0
-      els.maxButton.textContent = maxAffordable > 0 ? `Max (+${maxAffordable.toLocaleString()})` : 'Max'
+      const count = resolveBuyCount(state, id)
+      if (count <= 0) {
+        els.cost.textContent = 'Not enough power cores'
+        els.buyButton.disabled = true
+        els.buyButton.textContent = 'Buy'
+      } else {
+        const cost = pcBulkUpgradeCost(id, current, count)
+        const affordable = state.powerCores.gte(cost)
+        els.cost.textContent = `Cost: ${format(cost, formatMode)}`
+        els.buyButton.disabled = !affordable
+        els.buyButton.textContent = `Buy x${count.toLocaleString()}`
+      }
     }
   }
 

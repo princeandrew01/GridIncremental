@@ -8,6 +8,7 @@ import {
   pcMaxAffordableCount,
   pcMaxLevelFor,
   buyPowerCoreUpgrade,
+  isPowerCoreUpgradeLocked,
 } from '../src/game/powerCoreUpgrades'
 import { POWER_CORE_UPGRADE_MAX_LEVEL } from '../src/game/config'
 import type { PowerCoreUpgradeId } from '../src/game/types'
@@ -24,8 +25,8 @@ function bruteForceBulkCost(id: PowerCoreUpgradeId, fromLevel: number, count: nu
 describe('pcUpgradeCostAt / pcBulkUpgradeCost', () => {
   it('matches a brute-force per-level sum for every upgrade, across a range of starting levels and counts', () => {
     for (const id of POWER_CORE_UPGRADE_IDS) {
-      for (const fromLevel of [0, 1, 5, 20]) {
-        for (const count of [1, 3, 10]) {
+      for (const fromLevel of [0, 1, 2]) {
+        for (const count of [1, 2, 3]) {
           if (fromLevel + count > pcMaxLevelFor(id)) continue
           const closedForm = pcBulkUpgradeCost(id, fromLevel, count).toNumber()
           const bruteForce = bruteForceBulkCost(id, fromLevel, count).toNumber()
@@ -35,19 +36,15 @@ describe('pcUpgradeCostAt / pcBulkUpgradeCost', () => {
     }
   })
 
-  it("matches a brute-force sum near the top of basicValue's 999,999-level range (quadratic curve)", () => {
-    const fromLevel = 999_900
-    const count = 50
-    const closedForm = pcBulkUpgradeCost('basicValue', fromLevel, count).toNumber()
-    const bruteForce = bruteForceBulkCost('basicValue', fromLevel, count).toNumber()
-    expect(closedForm / bruteForce).toBeCloseTo(1, 9)
-  })
-
-  it('costs strictly increase level over level for every upgrade (no flat pricing left)', () => {
+  it('costs strictly increase level over level for every upgrade (x10/level for the 4 slot upgrades)', () => {
     for (const id of POWER_CORE_UPGRADE_IDS) {
-      if (pcMaxLevelFor(id) < 2) continue // unlockPowerCoreGenerator only ever buys one level
+      if (pcMaxLevelFor(id) < 2) continue
       expect(pcUpgradeCostAt(id, 1).gt(pcUpgradeCostAt(id, 0))).toBe(true)
-      expect(pcUpgradeCostAt(id, 5).gt(pcUpgradeCostAt(id, 1))).toBe(true)
+      expect(pcUpgradeCostAt(id, 2).gt(pcUpgradeCostAt(id, 1))).toBe(true)
+    }
+    // The 4 evolution-slot upgrades are confirmed to grow x10/level.
+    for (const id of ['critTowerSlots', 'basicSteadySlots', 'buffStackerSlots', 'buffAllSlots'] as const) {
+      expect(pcUpgradeCostAt(id, 1).div(pcUpgradeCostAt(id, 0)).toNumber()).toBeCloseTo(10, 6)
     }
   })
 
@@ -62,7 +59,7 @@ describe('pcUpgradeCostAt / pcBulkUpgradeCost', () => {
 describe('pcMaxAffordableCount', () => {
   it('returns the largest count whose bulk cost is affordable, and one more is not', () => {
     for (const id of POWER_CORE_UPGRADE_IDS) {
-      const powerCores = pcUpgradeCostAt(id, 0).times(5.5) // enough for a handful of levels
+      const powerCores = pcUpgradeCostAt(id, 0).times(2.5)
       const n = pcMaxAffordableCount(id, 0, powerCores)
       expect(pcBulkUpgradeCost(id, 0, n).lte(powerCores)).toBe(true)
       if (n < pcMaxLevelFor(id)) {
@@ -86,49 +83,63 @@ describe('pcMaxAffordableCount', () => {
 })
 
 describe('buyPowerCoreUpgrade', () => {
-  it('is all-or-nothing: deducts the exact flat bulk cost from powerCores (never touching currency) and advances the level', () => {
+  it('is all-or-nothing: deducts the exact bulk cost from powerCores (never touching currency) and advances the level', () => {
     const state = makeGameState(3, 3)
-    state.powerCores = new Decimal(1e6)
+    state.powerCores = new Decimal(1e12)
     state.currency = new Decimal(777) // untouched throughout
 
-    const cost = pcBulkUpgradeCost('critChance', 0, 5)
-    expect(buyPowerCoreUpgrade(state, 'critChance', 5)).toBe(true)
-    expect(state.powerCoreUpgrades.critChance).toBe(5)
-    expect(state.powerCores.toString()).toBe(new Decimal(1e6).minus(cost).toString())
+    const cost = pcBulkUpgradeCost('critTowerSlots', 0, 3)
+    expect(buyPowerCoreUpgrade(state, 'critTowerSlots', 3)).toBe(true)
+    expect(state.powerCoreUpgrades.critTowerSlots).toBe(3)
+    expect(state.powerCores.toString()).toBe(new Decimal(1e12).minus(cost).toString())
     expect(state.currency.toString()).toBe('777')
 
     state.powerCores = new Decimal(0)
-    const before = state.powerCoreUpgrades.critChance
-    expect(buyPowerCoreUpgrade(state, 'critChance', 1)).toBe(false)
-    expect(state.powerCoreUpgrades.critChance).toBe(before) // unchanged, not a partial buy
+    const before = state.powerCoreUpgrades.critTowerSlots
+    expect(buyPowerCoreUpgrade(state, 'critTowerSlots', 1)).toBe(false)
+    expect(state.powerCoreUpgrades.critTowerSlots).toBe(before) // unchanged, not a partial buy
   })
 
   it('refuses to buy past the max level', () => {
     const state = makeGameState(3, 3)
-    state.powerCores = new Decimal(1e9)
-    state.powerCoreUpgrades.powerCoreChance = pcMaxLevelFor('powerCoreChance')
-    expect(buyPowerCoreUpgrade(state, 'powerCoreChance', 1)).toBe(false)
+    state.powerCores = new Decimal(1e12)
+    state.powerCoreUpgrades.buffAllSlots = pcMaxLevelFor('buffAllSlots')
+    expect(buyPowerCoreUpgrade(state, 'buffAllSlots', 1)).toBe(false)
   })
 
-  it('unlockPowerCoreGenerator has max level 1 - a one-shot gate, not a leveled stat', () => {
-    expect(pcMaxLevelFor('unlockPowerCoreGenerator')).toBe(1)
+  it('the 4 evolution-slot upgrades are fully independent - buying one never affects the others', () => {
     const state = makeGameState(3, 3)
-    state.powerCores = new Decimal(1e9)
-    expect(buyPowerCoreUpgrade(state, 'unlockPowerCoreGenerator', 1)).toBe(true)
-    expect(buyPowerCoreUpgrade(state, 'unlockPowerCoreGenerator', 1)).toBe(false) // already at max
+    state.powerCores = new Decimal(1e12)
+    expect(buyPowerCoreUpgrade(state, 'buffStackerSlots', 5)).toBe(true)
+    expect(state.powerCoreUpgrades.buffStackerSlots).toBe(5)
+    expect(state.powerCoreUpgrades.buffAllSlots).toBe(0)
+    expect(state.powerCoreUpgrades.critTowerSlots).toBe(0)
+    expect(state.powerCoreUpgrades.basicSteadySlots).toBe(0)
   })
 
   it('POWER_CORE_UPGRADE_MAX_LEVEL matches the confirmed level caps for every upgrade', () => {
     expect(POWER_CORE_UPGRADE_MAX_LEVEL).toEqual({
-      powerCoreReduction: 25,
-      powerCoreAmount: 99,
-      powerCoreChance: 25,
-      unlockPowerCoreGenerator: 1,
-      tickSpeed: 25,
-      basicValue: 999_999,
-      critChance: 25,
-      critAmount: 25,
       gridSize: 3,
+      critTowerSlots: 5,
+      basicSteadySlots: 5,
+      buffStackerSlots: 5,
+      buffAllSlots: 5,
     })
+  })
+})
+
+describe('isPowerCoreUpgradeLocked', () => {
+  it('the 4 evolution-slot upgrades are locked at level 0 and unlock once a level is bought', () => {
+    const state = makeGameState(3, 3)
+    for (const id of ['critTowerSlots', 'basicSteadySlots', 'buffStackerSlots', 'buffAllSlots'] as const) {
+      expect(isPowerCoreUpgradeLocked(state, id)).toBe(true)
+    }
+    state.powerCoreUpgrades.critTowerSlots = 1
+    expect(isPowerCoreUpgradeLocked(state, 'critTowerSlots')).toBe(false)
+  })
+
+  it('gridSize is never locked, even at level 0', () => {
+    const state = makeGameState(3, 3)
+    expect(isPowerCoreUpgradeLocked(state, 'gridSize')).toBe(false)
   })
 })

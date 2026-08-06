@@ -3,14 +3,14 @@ import { makeGameState, cellIndex } from './game/types'
 import type { GameState, TickResult, UpgradeId, PowerCoreUpgradeId } from './game/types'
 import { recalculate, tick, rotateBuffFacing, expectedCritMultipliers } from './game/engine'
 import { GRID_W, GRID_H, MAX_CATCHUP_TICKS, STARTING_CURRENCY } from './game/config'
-import { placeCell, upgradeCell, removeCell, canAffordPlacement, healGridSize, type BuildableType } from './game/economy'
+import { placeCell, upgradeCell, removeCell, canAffordPlacement, healGridSize, evolveCell, updateDiscoveredTypes, type PlaceableType, type EvolutionType } from './game/economy'
 import { buyUpgrade, effectiveTickMs } from './game/upgrades'
 import { buyPowerCoreUpgrade } from './game/powerCoreUpgrades'
 import { saveToLocalStorage, loadFromLocalStorage } from './game/save'
 import { computeOfflineTicks, applyOfflineProgress } from './game/offline'
 import { format } from './game/format'
 import { loadSettings, saveSettings, applyTheme, type Settings } from './game/settings'
-import { updateHighestValues, checkAchievements, checkPowerCoreExponents } from './game/stats'
+import { updateHighestValues, checkAchievements } from './game/stats'
 import { createGrid, type GridHandle, type GridSelection } from './ui/grid'
 import { createAppHeader } from './ui/appHeader'
 import { createCurrencyHeader } from './ui/currencyHeader'
@@ -32,7 +32,7 @@ const AUTOSAVE_INTERVAL_MS = 10_000
 // No type armed for placement by default; the player picks one from the
 // build panel. Deselectable three ways: click the active build button again,
 // right-click, or click anywhere outside the grid and build buttons.
-let buildType: BuildableType | null = null
+let buildType: PlaceableType | null = null
 let selected: GridSelection | null = null
 let state: GameState
 let lastResult: TickResult
@@ -117,9 +117,10 @@ function render(): void {
   // below for "refresh immediately, don't wait for next tick".
   const displayNoCrit = recalculate(state)
   const displayWithCrit = recalculate(state, expectedCritMultipliers(state))
+  updateDiscoveredTypes(state) // one-time "???" reveal per placeable type - cheap, same call-every-render pattern as the checks below
   gridHandle.update(state, lastResult, displayNoCrit, selected, canPlaceCurrent, settings.numberFormat)
   currencyHeaderHandle.update(state, lastResult, settings.numberFormat)
-  panelHandle.update(state, displayNoCrit, displayWithCrit, buildType, selected, settings.numberFormat)
+  panelHandle.update(state, displayNoCrit, displayWithCrit, buildType, selected, settings.numberFormat, settings.showBuildDescriptions)
   upgradesPanelHandle.update(state, settings.numberFormat)
   powerCoreUpgradesPanelHandle.update(state, settings.numberFormat)
   statsPanelHandle.update(state, lastResult, settings.numberFormat)
@@ -150,12 +151,12 @@ function handleCellClick(x: number, y: number): void {
     if (buildType && placeCell(state, x, y, buildType)) {
       lastResult = recalculate(state) // refresh values immediately, don't wait for next tick
     }
-  } else if (cell.type === 'buffV1') {
+  } else if (cell.type === 'buff' || cell.type === 'buffStacker') {
     const alreadySelected = selected !== null && selected.x === x && selected.y === y
-    // Only rotate if this Buff V1 was already selected - the very first
-    // click that selects it just selects (so the Upgrade menu is reachable
-    // without immediately spinning the facing you hadn't even seen yet).
-    // A second click while already selected rotates - can't use "click
+    // Only rotate if this directional buff was already selected - the very
+    // first click that selects it just selects (so the Upgrade menu is
+    // reachable without immediately spinning the facing you hadn't even seen
+    // yet). A second click while already selected rotates - can't use "click
     // again to deselect" for buffs, that click is already spoken for (see
     // engine.ts nextFacing). Right-click / click off the grid still deselects.
     if (alreadySelected) rotateBuffFacing(state, x, y)
@@ -185,6 +186,14 @@ function handleRemove(): void {
   if (removeCell(state, selected.x, selected.y)) {
     lastResult = recalculate(state)
     selected = null // the cell it pointed at is empty now, nothing left to inspect
+  }
+  render()
+}
+
+function handleEvolve(evolutionType: EvolutionType): void {
+  if (!selected) return
+  if (evolveCell(state, selected.x, selected.y, evolutionType)) {
+    lastResult = recalculate(state)
   }
   render()
 }
@@ -236,7 +245,6 @@ function useGameState(newState: GameState): void {
   lastResult = recalculate(state)
   updateHighestValues(state, lastResult)
   checkAchievements(state)
-  checkPowerCoreExponents(state)
 
   gridHandle = createGrid(gridContainer, state.width, state.height, handleCellClick) // clears/rebuilds gridContainer itself
   render()
@@ -284,6 +292,7 @@ const panelHandle = createPanel(
   },
   handleUpgrade,
   handleRemove,
+  handleEvolve,
 )
 const upgradesPanelHandle = createUpgradesPanel(tabShellHandle.contentContainer('upgrades'), handleBuyUpgrade)
 const powerCoreUpgradesPanelHandle = createPowerCoreUpgradesPanel(tabShellHandle.contentContainer('powerCores'), handleBuyPowerCoreUpgrade)
@@ -407,7 +416,6 @@ function frame(now: number): void {
   if (iterations > 0) {
     updateHighestValues(state, lastResult)
     checkAchievements(state)
-    checkPowerCoreExponents(state)
   }
 
   render()

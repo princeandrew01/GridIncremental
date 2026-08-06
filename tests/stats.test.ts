@@ -17,7 +17,7 @@ describe('updateHighestValues', () => {
     const state = makeGameState(3, 1)
     place(state, 0, 0, 'basic', 1)
     place(state, 1, 0, 'leech', 1)
-    place(state, 2, 0, 'buffV1', 2)
+    place(state, 2, 0, 'buff', 2)
 
     updateHighestValues(state, tick(state))
     const afterFirst = { basic: state.highestValue.basic.toString(), leech: state.highestValue.leech.toString() }
@@ -52,20 +52,37 @@ describe('updateHighestValues', () => {
     expect(state.highestValue.basic.toString()).toBe('9999')
   })
 
-  it('highestBuffLevel tracks the COMBINED level across every buff on the board, not any single one', () => {
-    const state = makeGameState(3, 1)
-    place(state, 0, 0, 'buffV1', 2)
-    place(state, 1, 0, 'buffV2', 3)
+  it("basicCrit and basicSteady (Basic's two evolutions) count toward the same highestValue.basic bucket as a plain Basic", () => {
+    const state = makeGameState(2, 1)
+    place(state, 0, 0, 'basicCrit', 10)
+    const result = {
+      base: state.cells.map(() => new Decimal(0)),
+      final: state.cells.map((_, i) => (i === cellIndex(0, 0, 2) ? new Decimal(12345) : new Decimal(0))),
+      production: new Decimal(0),
+      crits: state.cells.map(() => false),
+      basePowerCores: state.cells.map(() => new Decimal(0)),
+      finalPowerCores: state.cells.map(() => new Decimal(0)),
+      powerCoreProduction: new Decimal(0),
+    }
+    updateHighestValues(state, result)
+    expect(state.highestValue.basic.toString()).toBe('12345')
+  })
+
+  it('highestBuffLevel tracks the COMBINED level across every buff-type cell on the board (Buff/Buff Stacker/Buff All alike), not any single one', () => {
+    const state = makeGameState(4, 1)
+    place(state, 0, 0, 'buff', 2)
+    place(state, 1, 0, 'buffStacker', 3)
+    place(state, 2, 0, 'buffAll', 4)
     // no basic/leech needed - buff-only board
 
     updateHighestValues(state, tick(state))
-    expect(state.highestBuffLevel).toBe(5) // 2 + 3, not max(2, 3)
+    expect(state.highestBuffLevel).toBe(9) // 2 + 3 + 4, not max(2, 3, 4)
 
     // Removing a buff can lower the live sum, but the running max never
     // drops - same ratchet behaviour as highestValue.basic/leech above.
-    state.cells[cellIndex(1, 0, 3)].type = 'empty'
+    state.cells[cellIndex(1, 0, 4)].type = 'empty'
     updateHighestValues(state, tick(state))
-    expect(state.highestBuffLevel).toBe(5)
+    expect(state.highestBuffLevel).toBe(9)
   })
 })
 

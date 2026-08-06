@@ -21,7 +21,7 @@ interface CategoryEls {
 const ICON_TYPE_CLASS: Record<string, string> = {
   highest_basic: 'cell-basic',
   highest_leech: 'cell-leech',
-  buff_level: 'cell-buffV1',
+  buff_level: 'cell-buff',
 }
 
 /**

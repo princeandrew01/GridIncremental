@@ -9,35 +9,14 @@ import {
   ACHIEVEMENT_HIGHEST_LEECH,
   ACHIEVEMENT_BUFF_LEVEL,
 } from './config'
-import { powerCoreReductionFraction, powerCoreAmountFor } from './upgrades'
 
-/**
- * The n-th (0-indexed) energy threshold that awards a power core: n=0 is
- * 100 (10^2), n=1 is 1000 (10^3), and so on - reduced by the Power Core
- * Reduction upgrade, uniformly across every tier.
- */
-export function powerCoreThresholdFor(n: number, state: GameState): Decimal {
-  return Decimal.pow(10, n + 2).times(1 - powerCoreReductionFraction(state))
-}
-
-/**
- * Awards a power core for every 10^n energy threshold currentRunEnergyEarned
- * has newly crossed (a bounded while-loop, not a closed-form jump - unlike
- * ticks or buff firings, which can number in the millions, crossing several
- * exponents in one jump is realistically always a handful at most, even from
- * a big offline catch-up), and updates bestRunEnergyEarned. Idempotent, same
- * pattern as checkAchievements - safe to call after every tick or offline
- * catch-up.
- */
-export function checkPowerCoreExponents(state: GameState): void {
-  while (state.currentRunEnergyEarned.gte(powerCoreThresholdFor(state.powerCoreExponentsAwarded, state))) {
-    state.powerCores = state.powerCores.plus(powerCoreAmountFor(state))
-    state.powerCoreExponentsAwarded += 1
-  }
-  if (state.currentRunEnergyEarned.gt(state.bestRunEnergyEarned)) {
-    state.bestRunEnergyEarned = state.currentRunEnergyEarned
-  }
-}
+// Alpha 0.31: the power-core-exponent-award mechanic (checkPowerCoreExponents/
+// powerCoreThresholdFor) is gone entirely - Power Cores now come exclusively
+// from the Power Core Generator (see engine.ts firePowerCoreGenerators /
+// offline.ts offlinePowerCoreGain). currentRunEnergyEarned/bestRunEnergyEarned
+// stay as plain Stats-tab numbers (see main.ts, which still updates the
+// former on every tick/catch-up) even though nothing mechanical reads them
+// right now - kept for prestige later.
 
 /**
  * Scans the board's current final values and bumps the running "highest
@@ -46,23 +25,29 @@ export function checkPowerCoreExponents(state: GameState): void {
  * removal mechanic driving these three down between calls, the end state
  * after a jump is never less than any point along the way.
  *
- * highestBuffLevel tracks the highest COMBINED level across every Buff (V1 +
- * V2) on the board at any one snapshot, not any single buff's own level - a
- * lone buff only reaches level 2 or 4, nowhere near enough range for the
- * Achievements tab's 10-tier requirement (see config.ts). Removing a buff can
- * lower the live sum, but that's fine: like highestValue below, this only
- * ever ratchets up, and checkAchievements() only ever adds unlocks, never
- * revokes them.
+ * A Basic's two evolutions (basicCrit/basicSteady) count toward the same
+ * `highestValue.basic` bucket as a plain Basic - they're still fundamentally
+ * "a Basic's own output," just with a much bigger multiplier, not a
+ * separate stat of their own.
+ *
+ * highestBuffLevel tracks the highest COMBINED level across every buff-type
+ * cell on the board at any one snapshot (Buff, Buff Stacker, and Buff All
+ * alike - all three share the same 0-9 level range now), not any single
+ * buff's own level - a lone buff only reaches level 9, nowhere near enough
+ * range for the Achievements tab's 10-tier requirement (see config.ts).
+ * Removing a buff can lower the live sum, but that's fine: like
+ * highestValue below, this only ever ratchets up, and checkAchievements()
+ * only ever adds unlocks, never revokes them.
  */
 export function updateHighestValues(state: GameState, result: TickResult): void {
   let buffLevelSum = 0
   for (let i = 0; i < state.cells.length; i++) {
     const cell = state.cells[i]
-    if (cell.type === 'basic') {
+    if (cell.type === 'basic' || cell.type === 'basicCrit' || cell.type === 'basicSteady') {
       if (result.final[i].gt(state.highestValue.basic)) state.highestValue.basic = result.final[i]
     } else if (cell.type === 'leech') {
       if (result.final[i].gt(state.highestValue.leech)) state.highestValue.leech = result.final[i]
-    } else if (cell.type === 'buffV1' || cell.type === 'buffV2') {
+    } else if (cell.type === 'buff' || cell.type === 'buffStacker' || cell.type === 'buffAll') {
       buffLevelSum += cell.level
     }
   }

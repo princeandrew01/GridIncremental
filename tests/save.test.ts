@@ -15,11 +15,11 @@ import {
 import type { SaveData } from '../src/game/save'
 
 function buildInterestingState(): GameState {
-  const state = makeGameState(4, 3)
+  const state = makeGameState(4, 4)
+
   const basic = state.cells[cellIndex(0, 0, 4)]
   basic.type = 'basic'
   basic.level = 4
-  basic.buffAccum = new Decimal(3)
   basic.placementCost = new Decimal(10)
 
   const leech = state.cells[cellIndex(1, 0, 4)]
@@ -27,23 +27,38 @@ function buildInterestingState(): GameState {
   leech.level = 2
   leech.placementCost = new Decimal(132.5)
 
-  const buffV1 = state.cells[cellIndex(2, 0, 4)]
-  buffV1.type = 'buffV1'
-  buffV1.level = 1
-  buffV1.facing = 'left'
-  buffV1.placementCost = new Decimal(287.75)
+  const buff = state.cells[cellIndex(2, 0, 4)]
+  buff.type = 'buff'
+  buff.level = 5
+  buff.facing = 'left'
+  buff.placementCost = new Decimal(287.75)
 
-  const buffV2 = state.cells[cellIndex(3, 0, 4)]
-  buffV2.type = 'buffV2'
-  buffV2.level = 3
-  buffV2.placementCost = new Decimal(4000)
+  const buffStacker = state.cells[cellIndex(3, 0, 4)]
+  buffStacker.type = 'buffStacker'
+  buffStacker.level = 9
+  buffStacker.facing = 'down'
+  buffStacker.placementCost = new Decimal(287.75) // inherited from a plain buff, same as evolveCell leaves it
 
-  // (4x3 board has a 5th cell available at (0,1) for the new generator type.)
-  const powerCoreGenerator = state.cells[cellIndex(0, 1, 4)]
+  const buffAll = state.cells[cellIndex(0, 1, 4)]
+  buffAll.type = 'buffAll'
+  buffAll.level = 9
+  buffAll.placementCost = new Decimal(287.75)
+
+  const basicCrit = state.cells[cellIndex(1, 1, 4)]
+  basicCrit.type = 'basicCrit'
+  basicCrit.level = 10
+  basicCrit.placementCost = new Decimal(10)
+
+  const basicSteady = state.cells[cellIndex(2, 1, 4)]
+  basicSteady.type = 'basicSteady'
+  basicSteady.level = 10
+  basicSteady.placementCost = new Decimal(10)
+
+  const powerCoreGenerator = state.cells[cellIndex(3, 1, 4)]
   powerCoreGenerator.type = 'powerCoreGenerator'
   powerCoreGenerator.level = 2
-  powerCoreGenerator.placementCost = new Decimal(15)
-  powerCoreGenerator.coreProgress = 6
+  powerCoreGenerator.placementCost = new Decimal(0) // always 0 now - placement is free (see economy.ts)
+  powerCoreGenerator.coreProgress = 2
 
   // Beyond Number.MAX_VALUE (~1.8e308) - the whole reason break_infinity
   // exists, and exactly what a naive JSON round-trip through a plain number
@@ -60,23 +75,21 @@ function buildInterestingState(): GameState {
     critAmount: 1,
     removalRefund: 4,
     gridSize: 2,
+    powerGeneratorCount: 3,
   }
 
   state.powerCores = Decimal.fromMantissaExponent(4.5, 20)
   state.powerCoreUpgrades = {
-    powerCoreReduction: 5,
-    powerCoreAmount: 12,
-    powerCoreChance: 3,
-    unlockPowerCoreGenerator: 1,
-    tickSpeed: 2,
-    basicValue: 999,
-    critChance: 1,
-    critAmount: 4,
     gridSize: 1,
+    critTowerSlots: 2,
+    basicSteadySlots: 1,
+    buffStackerSlots: 3,
+    buffAllSlots: 1,
   }
   state.currentRunEnergyEarned = Decimal.fromMantissaExponent(6.5, 40)
   state.bestRunEnergyEarned = Decimal.fromMantissaExponent(7.5, 45)
-  state.powerCoreExponentsAwarded = 6
+
+  state.discoveredTypes = { basic: true, leech: true, buff: true, powerCoreGenerator: true }
 
   state.startedAt = 1_699_000_000_000
   state.prestigeStartedAt = 1_699_500_000_000
@@ -85,7 +98,7 @@ function buildInterestingState(): GameState {
   state.totalGeneratorsBuilt = 17
   state.totalUpgrades = 42
   state.highestValue = { basic: new Decimal(555), leech: new Decimal(777) }
-  state.highestBuffLevel = 3
+  state.highestBuffLevel = 23
   state.unlockedAchievements = ['generators_built_1', 'generators_built_10']
   return state
 }
@@ -104,7 +117,6 @@ function expectStatesEqual(a: GameState, b: GameState): void {
     expect(b.cells[i].type).toBe(a.cells[i].type)
     expect(b.cells[i].level).toBe(a.cells[i].level)
     expect(b.cells[i].facing).toBe(a.cells[i].facing)
-    expect(b.cells[i].buffAccum.toString()).toBe(a.cells[i].buffAccum.toString())
     expect(b.cells[i].placementCost.toString()).toBe(a.cells[i].placementCost.toString())
     expect(b.cells[i].coreProgress).toBe(a.cells[i].coreProgress)
   }
@@ -114,7 +126,7 @@ function expectStatesEqual(a: GameState, b: GameState): void {
   expect(b.powerCoreUpgrades).toEqual(a.powerCoreUpgrades)
   expect(b.currentRunEnergyEarned.toString()).toBe(a.currentRunEnergyEarned.toString())
   expect(b.bestRunEnergyEarned.toString()).toBe(a.bestRunEnergyEarned.toString())
-  expect(b.powerCoreExponentsAwarded).toBe(a.powerCoreExponentsAwarded)
+  expect(b.discoveredTypes).toEqual(a.discoveredTypes)
   expect(b.startedAt).toBe(a.startedAt)
   expect(b.prestigeStartedAt).toBe(a.prestigeStartedAt)
   expect(b.activePlayMs).toBe(a.activePlayMs)
@@ -128,7 +140,7 @@ function expectStatesEqual(a: GameState, b: GameState): void {
 }
 
 describe('save/load', () => {
-  it('round-trip through serialize/deserialize (simulating actual JSON storage) reproduces identical state, including Decimal precision beyond 1e308', () => {
+  it('round-trip through serialize/deserialize (simulating actual JSON storage) reproduces identical state, including Decimal precision beyond 1e308, across all 9 cell types', () => {
     const original = buildInterestingState()
     // Route through an actual JSON string, same as localStorage would -
     // catches anything that only survives as long as it stays a live object.
@@ -163,7 +175,7 @@ describe('save/load', () => {
     expect(save.version).toBe(SAVE_VERSION)
   })
 
-  it('migrate() backfills a v1 save (predating lifetime stats, placementCost, and Alpha 0.2\'s rebalance) all the way to the current version', () => {
+  it('migrate() backfills a v1 save (predating lifetime stats, placementCost, and every rebalance since) all the way to the current version', () => {
     // Shaped exactly like a save produced before any of those features
     // existed - no lifetime-stat fields, no per-cell `p`, and 1-based levels.
     const v1Save = {
@@ -180,7 +192,7 @@ describe('save/load', () => {
     }
 
     const migrated = migrate(v1Save as unknown as SaveData)
-    expect(migrated.version).toBe(6) // cascades v1 -> v2 -> v3 -> v4 -> v5 -> v6 in one call
+    expect(migrated.version).toBe(SAVE_VERSION) // cascades v1 -> v2 -> ... -> current in one call
     expect(migrated.startedAt).toBe(v1Save.lastSaved)
     expect(migrated.prestigeStartedAt).toBe(v1Save.lastSaved)
     expect(migrated.activePlayMs).toBe(0)
@@ -193,20 +205,22 @@ describe('save/load', () => {
     // v2 -> v3: placementCost defaults to '0' - conservative on purpose, see
     // save.ts. A pre-migration generator refunds nothing if removed.
     expect(migrated.cells.every((c) => c.p === '0')).toBe(true)
-    // v3 -> v4: levels rebase from 1-based to 0-based and clamp to the new,
-    // smaller max: basic level 3 -> min(3-1, 5) = 2.
+    // v3 -> v4: levels rebase from 1-based to 0-based and clamp to the
+    // historical Alpha 0.2 max: basic level 3 -> min(3-1, 5) = 2.
     expect(migrated.cells[0].l).toBe(2)
     expect(migrated.cells[1].l).toBe(0) // empty cell: stays 0
-    expect(migrated.upgrades).toEqual(makeEmptyUpgradeLevels())
+    expect(migrated.upgrades).toEqual({ ...makeEmptyUpgradeLevels(), powerGeneratorCount: 0 })
     // v5 -> v6: power cores backfill to empty/zero, except currentRun/
     // bestRunEnergyEarned, which take the same "best available guess"
     // (current lifetimeCurrencyEarned) the v1->v2 stats backfill used.
     expect(migrated.cells.every((c) => c.cp === 0)).toBe(true)
     expect(migrated.powerCores).toBe('0')
-    expect(migrated.powerCoreUpgrades).toEqual(makeEmptyPowerCoreUpgradeLevels())
     expect(migrated.currentRunEnergyEarned).toBe('4200')
     expect(migrated.bestRunEnergyEarned).toBe('4200')
-    expect(migrated.powerCoreExponentsAwarded).toBe(0)
+    // v6 -> v7: powerCoreUpgrades rebuilt to the 5-id shape, discoveredTypes
+    // backfilled from what's actually on the board.
+    expect(migrated.powerCoreUpgrades).toEqual(makeEmptyPowerCoreUpgradeLevels())
+    expect(migrated.discoveredTypes).toEqual({ basic: true })
 
     // And it loads cleanly end-to-end through deserialize, not just migrate().
     const state = deserialize(v1Save as unknown as SaveData)
@@ -216,9 +230,10 @@ describe('save/load', () => {
     expect(state.currency.toString()).toBe('4200')
     expect(state.lifetimeCurrencyEarned.toString()).toBe('4200')
     expect(state.powerCores.toString()).toBe('0')
+    expect(state.discoveredTypes.basic).toBe(true)
   })
 
-  it('migrate() backfills a v2 save (predating placementCost and Alpha 0.2\'s rebalance) to the current version', () => {
+  it('migrate() backfills a v2 save (predating placementCost and every rebalance since) to the current version', () => {
     const v2Save = {
       version: 2,
       width: 1,
@@ -239,23 +254,23 @@ describe('save/load', () => {
     }
 
     const migrated = migrate(v2Save as unknown as SaveData)
-    expect(migrated.version).toBe(6)
+    expect(migrated.version).toBe(SAVE_VERSION)
     expect(migrated.cells[0].p).toBe('0')
     expect(migrated.cells[0].l).toBe(0) // rebased: min(1-1, 5) = 0
-    expect(migrated.upgrades).toEqual(makeEmptyUpgradeLevels())
+    expect(migrated.upgrades).toEqual({ ...makeEmptyUpgradeLevels(), powerGeneratorCount: 0 })
     // Everything from v2 carries through untouched.
     expect(migrated.activePlayMs).toBe(5000)
     expect(migrated.unlockedAchievements).toEqual(['generators_built_1'])
   })
 
-  it("migrate() rebases levels and carries the buff type across (index 3 stays buffV1) when migrating a v3 save (pre-Alpha-0.2) to v4", () => {
+  it("migrate()'s v3->v4 step rebases levels and carries the buff type across (index 3 stays `buff`) using hard-coded historical max levels, not the live MAX_LEVEL config - regression for a real bug found during Alpha 0.31 (MAX_LEVEL.buffV1/.buffV2 no longer exist at all; reading them dynamically would have produced NaN)", () => {
     const v3Save = {
       version: 3,
       width: 2,
       height: 1,
       cells: [
         { t: 1, l: 10, b: '0', f: 'up', p: '5' }, // basic, maxed out under the old system (old max level 10)
-        { t: 3, l: 5, b: '0', f: 'left', p: '2' }, // buff, maxed out under the old system (old max level 5)
+        { t: 3, l: 5, b: '0', f: 'left', p: '2' }, // buff (old buffV1 slot), maxed out under the old system (old max level 5)
       ],
       currency: '100',
       tickCount: 50,
@@ -272,21 +287,51 @@ describe('save/load', () => {
     }
 
     const migrated = migrate(v3Save as unknown as SaveData)
-    expect(migrated.version).toBe(6)
-    expect(migrated.cells[0].l).toBe(5) // basic: min(10-1, MAX_LEVEL.basic=5) = 5, clamped down from 9
+    expect(migrated.version).toBe(SAVE_VERSION)
+    expect(Number.isNaN(migrated.cells[0].l)).toBe(false)
+    expect(Number.isNaN(migrated.cells[1].l)).toBe(false)
+    expect(migrated.cells[0].l).toBe(5) // basic: min(10-1, historical 5) = 5, clamped down from 9
     expect(migrated.cells[0].t).toBe(1)
-    expect(migrated.cells[1].l).toBe(2) // buffV1: min(5-1, MAX_LEVEL.buffV1=2) = 2, clamped down from 4
-    expect(migrated.cells[1].t).toBe(3) // unchanged index - an old `buff` cell is a buffV1 for free
-    expect(migrated.upgrades).toEqual(makeEmptyUpgradeLevels())
+    expect(migrated.cells[1].l).toBe(2) // buffV1 slot: min(5-1, historical 2) = 2, clamped down from 4
+    expect(migrated.cells[1].t).toBe(3) // unchanged index - an old buffV1 cell is `buff` for free
+    expect(migrated.upgrades).toEqual({ ...makeEmptyUpgradeLevels(), powerGeneratorCount: 0 })
     expect(migrated.highestBuffLevel).toBe(4) // max(0, 5-1)
 
     const state = deserialize(v3Save as unknown as SaveData)
-    expect(state.cells[1].type).toBe('buffV1')
+    expect(state.cells[1].type).toBe('buff')
     expect(state.cells[1].level).toBe(2)
     expect(state.upgrades.basicValue).toBe(0)
   })
 
-  it('migrate() backfills the gridSize upgrade key (and only that key) when migrating a v4 save (pre-Grid-Size-upgrade) to v5', () => {
+  it("migrate()'s v3->v4 step also handles an old buffV2-slot cell (index 4) without NaN, even though it later becomes empty at v6->v7", () => {
+    const v3Save = {
+      version: 3,
+      width: 1,
+      height: 1,
+      cells: [{ t: 4, l: 10, b: '0', f: 'up', p: '3' }], // old buffV2 slot, way above even the old max
+      currency: '0',
+      tickCount: 0,
+      lastSaved: 1_700_000_000_000,
+      startedAt: 0,
+      prestigeStartedAt: 0,
+      activePlayMs: 0,
+      lifetimeCurrencyEarned: '0',
+      totalGeneratorsBuilt: 1,
+      totalUpgrades: 0,
+      highestValue: { basic: '0', leech: '0' },
+      highestBuffLevel: 0,
+      unlockedAchievements: [],
+    }
+    const migrated = migrate(v3Save as unknown as SaveData)
+    expect(Number.isNaN(migrated.cells[0].l)).toBe(false)
+    expect(migrated.cells[0].l).toBe(4) // min(10-1, historical buffV2 max 4) = 4
+
+    // By the time it's actually deserialized, index 4 is retired and becomes empty.
+    const state = deserialize(v3Save as unknown as SaveData)
+    expect(state.cells[0].type).toBe('empty')
+  })
+
+  it('migrate() backfills the gridSize upgrade key (and only that key) when migrating a v4 save (pre-Grid-Size-upgrade) to the current version', () => {
     const v4Save = {
       version: 4,
       width: 8,
@@ -311,12 +356,13 @@ describe('save/load', () => {
     }
 
     const migrated = migrate(v4Save as unknown as SaveData)
-    expect(migrated.version).toBe(6)
+    expect(migrated.version).toBe(SAVE_VERSION)
     expect(migrated.upgrades.gridSize).toBe(0) // backfilled
+    expect(migrated.upgrades.powerGeneratorCount).toBe(0) // also backfilled (didn't exist until v7)
     expect(migrated.upgrades.tickSpeed).toBe(5) // everything else carries through untouched
     expect(migrated.upgrades.basicValue).toBe(100)
 
-    // Board size (8x8, already bigger than gridSizeForLevel(0) = 3x3) is left
+    // Board size (8x8, already bigger than gridSizeForLevel(0) = 4x4) is left
     // exactly as it was - the migration doesn't touch width/height at all.
     expect(migrated.width).toBe(8)
     expect(migrated.height).toBe(8)
@@ -326,7 +372,7 @@ describe('save/load', () => {
     expect(state.width).toBe(8)
   })
 
-  it('migrate() backfills Power Cores entirely when migrating a v5 save (pre-Power-Cores) to v6', () => {
+  it('migrate() backfills Power Cores entirely when migrating a v5 save (pre-Power-Cores) to the current version', () => {
     const v5Save = {
       version: 5,
       width: 3,
@@ -354,31 +400,102 @@ describe('save/load', () => {
     }
 
     const migrated = migrate(v5Save as unknown as SaveData)
-    expect(migrated.version).toBe(6)
+    expect(migrated.version).toBe(SAVE_VERSION)
     expect(migrated.cells.every((c) => c.cp === 0)).toBe(true)
     expect(migrated.powerCores).toBe('0')
-    expect(migrated.powerCoreUpgrades).toEqual(makeEmptyPowerCoreUpgradeLevels())
     // Backfilled from lifetimeCurrencyEarned (the "best available guess"),
     // not from the current (already partly spent) currency balance.
     expect(migrated.currentRunEnergyEarned).toBe('15000')
     expect(migrated.bestRunEnergyEarned).toBe('15000')
-    expect(migrated.powerCoreExponentsAwarded).toBe(0)
+    expect(migrated.powerCoreUpgrades).toEqual(makeEmptyPowerCoreUpgradeLevels())
+    expect(migrated.discoveredTypes).toEqual({ basic: true, leech: true }) // built on the board -> pre-discovered
     // Everything from v5 carries through untouched.
     expect(migrated.upgrades.tickSpeed).toBe(1)
     expect(migrated.cells[0].l).toBe(3)
 
-    // Loads cleanly end-to-end, and - crucially - checkPowerCoreExponents
-    // (run by main.ts right after any load, same self-heal pattern as
-    // achievements) would immediately grant the power cores this save
-    // already earned the right to (100, 1000, 10000 all crossed by 15000),
-    // since powerCoreExponentsAwarded starts at 0 against a nonzero
-    // currentRunEnergyEarned - not exercised here, just confirming the
-    // preconditions for that self-heal are exactly right.
     const state = deserialize(v5Save as unknown as SaveData)
     expect(state.powerCores.toString()).toBe('0')
     expect(state.currentRunEnergyEarned.toString()).toBe('15000')
-    expect(state.powerCoreExponentsAwarded).toBe(0)
     expect(state.cells[0].coreProgress).toBe(0)
+  })
+
+  it("migrate()'s v6->v7 step zeroes a pre-existing Power Core Generator's real (Power-Core-denominated) placementCost - it would otherwise wrongly refund Energy for a cost that was actually paid in Power Cores, since removeRefund now always credits Energy", () => {
+    const v6Save = {
+      version: 6,
+      width: 2,
+      height: 1,
+      cells: [
+        { t: 5, l: 1, b: '0', f: 'up', p: '250', cp: 8 }, // a real Alpha-0.3 Power Core Generator: cost 250 power cores, level 1 (old period 9), coreProgress 8 - doesn't fit the new period (4) at all
+        { t: 0, l: 0, b: '0', f: 'up', p: '0', cp: 0 },
+      ],
+      currency: '0',
+      tickCount: 0,
+      lastSaved: 1_700_000_000_000,
+      startedAt: 0,
+      prestigeStartedAt: 0,
+      activePlayMs: 0,
+      lifetimeCurrencyEarned: '0',
+      totalGeneratorsBuilt: 1,
+      totalUpgrades: 0,
+      highestValue: { basic: '0', leech: '0' },
+      highestBuffLevel: 0,
+      unlockedAchievements: [],
+      upgrades: { tickSpeed: 0, basicValue: 0, generatorValuePct: 0, critChance: 0, critAmount: 0, removalRefund: 0, gridSize: 0 },
+      powerCores: '5000',
+      powerCoreUpgrades: {
+        powerCoreReduction: 10,
+        powerCoreAmount: 20,
+        powerCoreChance: 5,
+        unlockPowerCoreGenerator: 1,
+        tickSpeed: 3,
+        basicValue: 50,
+        critChance: 2,
+        critAmount: 4,
+        gridSize: 2, // the one value that should survive
+      },
+      currentRunEnergyEarned: '100000',
+      bestRunEnergyEarned: '200000',
+      powerCoreExponentsAwarded: 4,
+    }
+
+    const migrated = migrate(v6Save as unknown as SaveData)
+    expect(migrated.version).toBe(7)
+    expect(migrated.cells[0].p).toBe('0') // zeroed - was 250 power cores, now nothing to refund
+    expect(migrated.cells[0].cp).toBeLessThan(4) // wrapped into the new (level 1 -> period 4) range
+    expect(migrated.cells[0].t).toBe(5) // still a Power Core Generator - type/level untouched
+    expect(migrated.cells[0].l).toBe(1)
+
+    // powerCoreUpgrades rebuilt: only gridSize survives, everything else
+    // (which has no equivalent anymore) resets to 0.
+    expect(migrated.powerCoreUpgrades).toEqual({
+      gridSize: 2,
+      critTowerSlots: 0,
+      basicSteadySlots: 0,
+      buffStackerSlots: 0,
+      buffAllSlots: 0,
+    })
+
+    // upgrades.powerGeneratorCount backfills to 0 - the generator stays
+    // locked (for *new* placements) until bought for real, even though
+    // this particular pre-existing one still loads fine.
+    expect(migrated.upgrades.powerGeneratorCount).toBe(0)
+
+    // discoveredTypes backfills from what's on the board.
+    expect(migrated.discoveredTypes).toEqual({ powerCoreGenerator: true })
+
+    // powerCores balance carries over unchanged - a real, already-earned
+    // balance isn't wiped just because how it's earned changed.
+    expect(migrated.powerCores).toBe('5000')
+    // currentRun/bestRunEnergyEarned carry over unchanged too.
+    expect(migrated.currentRunEnergyEarned).toBe('100000')
+    expect(migrated.bestRunEnergyEarned).toBe('200000')
+
+    // Loads cleanly end-to-end, and removing it now refunds nothing (not
+    // some Energy amount derived from a Power-Core-denominated cost).
+    const state = deserialize(v6Save as unknown as SaveData)
+    expect(state.cells[0].type).toBe('powerCoreGenerator')
+    expect(state.cells[0].placementCost.toString()).toBe('0')
+    expect(state.powerCores.toString()).toBe('5000')
   })
 })
 

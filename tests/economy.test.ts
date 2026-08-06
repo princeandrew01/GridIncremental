@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import Decimal from 'break_infinity.js'
 import { makeGameState, cellIndex } from '../src/game/types'
+import type { GameState } from '../src/game/types'
 import {
   placementCost,
   placeCell,
@@ -13,10 +14,15 @@ import {
   currencyFor,
   canAffordPlacement,
   healGridSize,
+  updateDiscoveredTypes,
+  canEvolve,
+  evolveCell,
+  evolutionSlotCap,
+  evolutionConversionCost,
+  type PlaceableType,
 } from '../src/game/economy'
-import { BASE_COST, COST_GROWTH, UPGRADE_COST_GROWTH, MAX_LEVEL, REMOVE_REFUND_FRACTION, GRID_W, GRID_H, MAX_GRID_SIZE } from '../src/game/config'
-import { buyPowerCoreUpgrade } from '../src/game/powerCoreUpgrades'
-import { maxLevelFor } from '../src/game/upgrades'
+import { BASE_COST, COST_GROWTH, UPGRADE_COST_GROWTH, MAX_LEVEL, REMOVE_REFUND_FRACTION, GRID_W, GRID_H, MAX_GRID_SIZE, EVOLUTION_CONVERSION_BASE_COST } from '../src/game/config'
+import { maxLevelFor, powerCoreGeneratorCap, buyUpgrade } from '../src/game/upgrades'
 
 describe('economy', () => {
   it('placement cost grows with COST_GROWTH per generator already placed', () => {
@@ -48,7 +54,7 @@ describe('economy', () => {
     expect(placeCell(state, 0, 0, 'leech')).toBe(false)
   })
 
-  it('upgrade cost grows with the type\'s own UPGRADE_COST_GROWTH per level', () => {
+  it("upgrade cost grows with the type's own UPGRADE_COST_GROWTH per level", () => {
     expect(upgradeCost('basic', 0).toNumber()).toBeCloseTo(BASE_COST.basic, 6)
     expect(upgradeCost('basic', 1).toNumber()).toBeCloseTo(BASE_COST.basic * UPGRADE_COST_GROWTH.basic, 6)
     expect(upgradeCost('basic', 2).toNumber()).toBeCloseTo(BASE_COST.basic * UPGRADE_COST_GROWTH.basic ** 2, 6)
@@ -71,79 +77,78 @@ describe('economy', () => {
 
   it('upgrade fails without enough currency', () => {
     const state = makeGameState(8, 8)
-    state.currency = new Decimal(BASE_COST.buffV1)
-    placeCell(state, 0, 0, 'buffV1')
+    state.currency = new Decimal(BASE_COST.buff)
+    placeCell(state, 0, 0, 'buff')
     expect(state.currency.toNumber()).toBe(0)
     expect(canUpgrade(state, 0, 0)).toBe(false)
     expect(upgradeCell(state, 0, 0)).toBe(false)
   })
 
-  it('MAX_LEVEL config sanity: basic 5, leech 2, buffV1 2, buffV2 4, powerCoreGenerator 4 (all 0-based)', () => {
-    expect(MAX_LEVEL).toEqual({ basic: 5, leech: 2, buffV1: 2, buffV2: 4, powerCoreGenerator: 4 })
+  it('an evolved cell (basicCrit/basicSteady/buffStacker/buffAll) is always reported as maxed - no further leveling', () => {
+    for (const type of ['basicCrit', 'basicSteady', 'buffStacker', 'buffAll'] as const) {
+      expect(MAX_LEVEL[type]).toBe(0)
+      expect(isMaxLevel(type, 10)).toBe(true) // whatever level it inherited from its pre-evolution self
+      expect(isMaxLevel(type, 0)).toBe(true)
+    }
   })
 
-  it('currencyFor: everything is priced in energy except the Power Core Generator', () => {
+  it('currencyFor: Basic/Leech/Buff level-up in Energy, the Power Core Generator in Power Cores', () => {
     expect(currencyFor('basic')).toBe('energy')
     expect(currencyFor('leech')).toBe('energy')
-    expect(currencyFor('buffV1')).toBe('energy')
-    expect(currencyFor('buffV2')).toBe('energy')
+    expect(currencyFor('buff')).toBe('energy')
     expect(currencyFor('powerCoreGenerator')).toBe('powerCores')
   })
 
-  it('the Power Core Generator is priced, upgraded, and refunded in power cores, never touching energy', () => {
+  it('the Power Core Generator is free to place once a slot is available (Power Generator Count already paid for it) - only its own per-cell leveling costs Power Cores, and removing it refunds nothing (nothing was spent at placement)', () => {
     const state = makeGameState(8, 8)
-    state.currency = new Decimal(1e9) // plenty of energy - none of it should move
+    state.currency = new Decimal(1e9)
     state.powerCores = new Decimal(1e6)
-    buyPowerCoreUpgrade(state, 'unlockPowerCoreGenerator', 1) // gated - see isBuildable
+    buyUpgrade(state, 'powerGeneratorCount', 1) // unlocks + grants 1 slot, Energy-priced
 
     expect(placeCell(state, 0, 0, 'powerCoreGenerator')).toBe(true)
-    expect(state.currency.toString()).toBe(new Decimal(1e9).toString()) // untouched
-    expect(state.powerCores.lt(1e6)).toBe(true) // spent
+    expect(state.powerCores.toString()).toBe(new Decimal(1e6).toString()) // untouched - placement is free
+    const currencyAfterUnlock = state.currency
 
-    const powerCoresAfterPlace = state.powerCores
     expect(upgradeCell(state, 0, 0)).toBe(true)
     expect(state.cells[cellIndex(0, 0, 8)].level).toBe(1)
-    expect(state.currency.toString()).toBe(new Decimal(1e9).toString()) // still untouched
-    expect(state.powerCores.lt(powerCoresAfterPlace)).toBe(true) // spent again
+    expect(state.currency.toString()).toBe(currencyAfterUnlock.toString()) // leveling doesn't touch Energy
+    expect(state.powerCores.lt(1e6)).toBe(true) // leveling spent Power Cores
 
     const powerCoresBeforeRemove = state.powerCores
     expect(removeCell(state, 0, 0)).toBe(true)
-    expect(state.powerCores.gt(powerCoresBeforeRemove)).toBe(true) // refunded in power cores
-    expect(state.currency.toString()).toBe(new Decimal(1e9).toString()) // still untouched
+    expect(state.powerCores.toString()).toBe(powerCoresBeforeRemove.toString()) // no refund - placementCost was 0
+    expect(state.currency.toString()).toBe(currencyAfterUnlock.toString())
   })
 
-  it('placing a Power Core Generator fails without enough power cores, even with abundant energy', () => {
+  it('placing a Power Core Generator fails with no slot available, even with abundant power cores - and is capped once slots run out', () => {
     const state = makeGameState(8, 8)
     state.currency = new Decimal(1e9)
-    state.powerCores = new Decimal(0)
+    state.powerCores = new Decimal(1e9)
+    expect(powerCoreGeneratorCap(state)).toBe(0)
     expect(placeCell(state, 0, 0, 'powerCoreGenerator')).toBe(false)
     expect(state.cells[cellIndex(0, 0, 8)].type).toBe('empty')
-  })
+    expect(canAffordPlacement(state, 'powerCoreGenerator')).toBe(false)
 
-  it('placing a Power Core Generator fails while locked, even with abundant power cores - regression for the UI-only [hidden] bug (see style.css .build-button[hidden])', () => {
-    const state = makeGameState(8, 8)
-    state.powerCores = new Decimal(1e9) // plenty - the lock, not affordability, is what should block this
-    expect(state.powerCoreUpgrades.unlockPowerCoreGenerator).toBe(0) // not unlocked
-    expect(placeCell(state, 0, 0, 'powerCoreGenerator')).toBe(false)
-    expect(state.cells[cellIndex(0, 0, 8)].type).toBe('empty')
-    expect(canAffordPlacement(state, 'powerCoreGenerator')).toBe(false) // isBuildable folds into this too
-
-    buyPowerCoreUpgrade(state, 'unlockPowerCoreGenerator', 1)
+    buyUpgrade(state, 'powerGeneratorCount', 1) // cap = 1
     expect(placeCell(state, 0, 0, 'powerCoreGenerator')).toBe(true)
+    expect(placeCell(state, 1, 0, 'powerCoreGenerator')).toBe(false) // cap reached
+
+    buyUpgrade(state, 'powerGeneratorCount', 1) // cap = 2
+    expect(placeCell(state, 1, 0, 'powerCoreGenerator')).toBe(true)
   })
 
-  it('placing a buff V1 next to an existing basic auto-faces it', () => {
+  it('placing a Buff next to an existing producer auto-faces it', () => {
     const state = makeGameState(8, 8)
     state.currency = new Decimal(1e9)
     placeCell(state, 0, 0, 'basic')
-    placeCell(state, 1, 0, 'buffV1') // basic is to its left
+    placeCell(state, 1, 0, 'buff') // basic is to its left
     expect(state.cells[cellIndex(1, 0, 8)].facing).toBe('left')
   })
 
-  it('placing a buff V1 with no adjacent basic still picks an in-bounds facing', () => {
+  it('placing a Buff with no adjacent producer still picks an in-bounds facing', () => {
     const state = makeGameState(8, 8)
     state.currency = new Decimal(1e9)
-    placeCell(state, 0, 0, 'buffV1')
+    placeCell(state, 0, 0, 'buff')
     const facing = state.cells[cellIndex(0, 0, 8)].facing
     expect(['right', 'down']).toContain(facing) // up/left are off-board at (0,0)
   })
@@ -151,8 +156,8 @@ describe('economy', () => {
   it('a placed cell remembers what it actually cost, even as later placements get more expensive', () => {
     const state = makeGameState(8, 8)
     state.currency = new Decimal(1e6)
-    placeCell(state, 0, 0, 'basic') // cost = BASE_COST.basic (10)
-    placeCell(state, 1, 0, 'basic') // cost = BASE_COST.basic * COST_GROWTH (11.5)
+    placeCell(state, 0, 0, 'basic') // cost = BASE_COST.basic
+    placeCell(state, 1, 0, 'basic') // cost = BASE_COST.basic * COST_GROWTH
     expect(state.cells[cellIndex(0, 0, 8)].placementCost.toNumber()).toBeCloseTo(BASE_COST.basic, 6)
     expect(state.cells[cellIndex(1, 0, 8)].placementCost.toNumber()).toBeCloseTo(BASE_COST.basic * COST_GROWTH, 6)
   })
@@ -212,6 +217,148 @@ describe('economy', () => {
   })
 })
 
+describe('evolution', () => {
+  function maxBasic(state: GameState, x: number, y: number): void {
+    state.currency = state.currency.plus(1e15)
+    placeCell(state, x, y, 'basic')
+    for (let i = 0; i < MAX_LEVEL.basic; i++) upgradeCell(state, x, y)
+  }
+  function maxBuff(state: GameState, x: number, y: number): void {
+    state.currency = state.currency.plus(1e15)
+    placeCell(state, x, y, 'buff')
+    for (let i = 0; i < MAX_LEVEL.buff; i++) upgradeCell(state, x, y)
+  }
+
+  it('canEvolve requires a maxed source cell of the matching family, a free slot, and enough power cores', () => {
+    const state = makeGameState(4, 4)
+    state.currency = new Decimal(1e9)
+    placeCell(state, 0, 0, 'basic') // not maxed yet (level 0)
+    state.powerCoreUpgrades.critTowerSlots = 5
+    state.powerCoreUpgrades.basicSteadySlots = 5
+    state.powerCores = new Decimal(1e9)
+    expect(canEvolve(state, 0, 0, 'basicCrit')).toBe(false) // not maxed
+
+    maxBasic(state, 1, 0)
+    expect(canEvolve(state, 1, 0, 'basicCrit')).toBe(true)
+    expect(canEvolve(state, 1, 0, 'basicSteady')).toBe(true) // same source family, different evolution
+    expect(canEvolve(state, 1, 0, 'buffStacker')).toBe(false) // wrong source family (needs a maxed buff, not basic)
+
+    state.powerCores = new Decimal(0)
+    expect(canEvolve(state, 1, 0, 'basicCrit')).toBe(false) // can't afford the conversion fee
+
+    state.powerCores = new Decimal(1e9)
+    state.powerCoreUpgrades.critTowerSlots = 0
+    expect(canEvolve(state, 1, 0, 'basicCrit')).toBe(false) // no slot
+  })
+
+  it('evolveCell converts in place, deducts the conversion fee, and preserves position/level/placementCost - only `type` changes', () => {
+    const state = makeGameState(3, 3)
+    maxBasic(state, 0, 0)
+    state.powerCoreUpgrades.critTowerSlots = 1
+    state.powerCores = new Decimal(1e9)
+    const placementCostBefore = state.cells[cellIndex(0, 0, 3)].placementCost.toString()
+
+    expect(evolveCell(state, 0, 0, 'basicCrit')).toBe(true)
+    const cell = state.cells[cellIndex(0, 0, 3)]
+    expect(cell.type).toBe('basicCrit')
+    expect(cell.level).toBe(MAX_LEVEL.basic) // inherited unchanged, not reset
+    expect(cell.placementCost.toString()).toBe(placementCostBefore) // untouched
+    expect(state.powerCores.lt(1e9)).toBe(true) // conversion fee spent
+  })
+
+  it('evolveCell fails (and refunds nothing, changes nothing) when canEvolve would be false', () => {
+    const state = makeGameState(3, 3)
+    state.currency = new Decimal(1e9)
+    placeCell(state, 0, 0, 'basic') // not maxed
+    state.powerCoreUpgrades.critTowerSlots = 5
+    state.powerCores = new Decimal(1e9)
+    const before = state.powerCores
+    expect(evolveCell(state, 0, 0, 'basicCrit')).toBe(false)
+    expect(state.cells[cellIndex(0, 0, 3)].type).toBe('basic')
+    expect(state.powerCores.toString()).toBe(before.toString())
+  })
+
+  it('evolution slot caps are fully independent per type', () => {
+    const state = makeGameState(4, 4)
+    maxBasic(state, 0, 0)
+    maxBasic(state, 1, 0)
+    state.powerCores = new Decimal(1e12)
+    state.powerCoreUpgrades.critTowerSlots = 1
+    state.powerCoreUpgrades.basicSteadySlots = 1
+
+    expect(evolveCell(state, 0, 0, 'basicCrit')).toBe(true)
+    expect(evolutionSlotCap(state, 'basicCrit')).toBe(1)
+    expect(canEvolve(state, 1, 0, 'basicCrit')).toBe(false) // Crit Tower slot already used
+
+    // Basic Steady's own cap is untouched by Crit Tower's usage - independent.
+    expect(canEvolve(state, 1, 0, 'basicSteady')).toBe(true)
+    expect(evolveCell(state, 1, 0, 'basicSteady')).toBe(true)
+  })
+
+  it('conversion fee doubles per additional evolved instance of the SAME type, and drops back down if one is removed', () => {
+    const state = makeGameState(5, 5)
+    state.powerCoreUpgrades.critTowerSlots = 5
+    state.powerCores = new Decimal(1e15)
+
+    expect(evolutionConversionCost(state, 'basicCrit').toNumber()).toBeCloseTo(EVOLUTION_CONVERSION_BASE_COST, 6) // 0 on board
+
+    maxBasic(state, 0, 0)
+    evolveCell(state, 0, 0, 'basicCrit')
+    expect(evolutionConversionCost(state, 'basicCrit').toNumber()).toBeCloseTo(EVOLUTION_CONVERSION_BASE_COST * 2, 6) // 1 on board
+
+    maxBasic(state, 1, 0)
+    evolveCell(state, 1, 0, 'basicCrit')
+    expect(evolutionConversionCost(state, 'basicCrit').toNumber()).toBeCloseTo(EVOLUTION_CONVERSION_BASE_COST * 4, 6) // 2 on board
+
+    // A different evolution type's cost is unaffected by basicCrit's count.
+    expect(evolutionConversionCost(state, 'basicSteady').toNumber()).toBeCloseTo(EVOLUTION_CONVERSION_BASE_COST, 6)
+
+    removeCell(state, 0, 0) // one fewer basicCrit on the board
+    expect(evolutionConversionCost(state, 'basicCrit').toNumber()).toBeCloseTo(EVOLUTION_CONVERSION_BASE_COST * 2, 6) // back down to 1-on-board pricing
+  })
+
+  it("discoveredTypes marks a placeable type discovered the first time it's affordable, and it stays discovered even after the balance drops back down", () => {
+    const state = makeGameState(3, 3)
+    expect(state.discoveredTypes.basic).toBeUndefined()
+
+    state.currency = new Decimal(0)
+    updateDiscoveredTypes(state)
+    expect(state.discoveredTypes.basic).toBeUndefined() // can't afford it yet
+
+    state.currency = new Decimal(BASE_COST.basic)
+    updateDiscoveredTypes(state)
+    expect(state.discoveredTypes.basic).toBe(true)
+
+    state.currency = new Decimal(0) // spend it back down
+    updateDiscoveredTypes(state)
+    expect(state.discoveredTypes.basic).toBe(true) // sticky - still discovered
+  })
+
+  it('placeCell also marks its own type discovered directly, independent of updateDiscoveredTypes', () => {
+    const state = makeGameState(3, 3)
+    state.currency = new Decimal(1e9)
+    expect(state.discoveredTypes.basic).toBeUndefined()
+    placeCell(state, 0, 0, 'basic')
+    expect(state.discoveredTypes.basic).toBe(true)
+  })
+
+  it('maxBuff/evolveCell also works for the Buff family (Buff Stacker / Buff All)', () => {
+    const state = makeGameState(3, 3)
+    maxBuff(state, 0, 0)
+    state.powerCoreUpgrades.buffStackerSlots = 1
+    state.powerCoreUpgrades.buffAllSlots = 1
+    state.powerCores = new Decimal(1e9)
+
+    expect(canEvolve(state, 0, 0, 'buffStacker')).toBe(true)
+    expect(canEvolve(state, 0, 0, 'buffAll')).toBe(true)
+    expect(canEvolve(state, 0, 0, 'basicCrit')).toBe(false) // wrong family
+
+    expect(evolveCell(state, 0, 0, 'buffStacker')).toBe(true)
+    expect(state.cells[cellIndex(0, 0, 3)].type).toBe('buffStacker')
+    expect(state.cells[cellIndex(0, 0, 3)].level).toBe(MAX_LEVEL.buff)
+  })
+})
+
 describe('healGridSize', () => {
   it('is a no-op for an already-compliant state (fresh default board, no upgrades)', () => {
     const state = makeGameState(GRID_W, GRID_H)
@@ -261,7 +408,7 @@ describe('healGridSize', () => {
     expect(state.width).toBe(MAX_GRID_SIZE)
     expect(state.height).toBe(MAX_GRID_SIZE)
     expect(state.cells.length).toBe(MAX_GRID_SIZE * MAX_GRID_SIZE)
-    // Refunded in energy (what a Basic is actually paid in - see currencyFor), at the default 50% refund fraction.
+    // Refunded in Energy, at the default 50% refund fraction.
     expect(state.currency.toString()).toBe(paidForDropped.times(0.5).toString())
     // The surviving cell kept its exact position and contents.
     expect(state.cells[cellIndex(3, 3, MAX_GRID_SIZE)].type).toBe('basic')
@@ -276,7 +423,7 @@ describe('healGridSize', () => {
   })
 })
 
-function place(state: ReturnType<typeof makeGameState>, x: number, y: number, type: 'basic' | 'leech' | 'buffV1' | 'buffV2') {
+function place(state: GameState, x: number, y: number, type: PlaceableType) {
   state.currency = state.currency.plus(1e9) // ensure affordable for setup
   placeCell(state, x, y, type)
 }

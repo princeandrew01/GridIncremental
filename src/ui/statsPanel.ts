@@ -2,7 +2,7 @@ import type { GameState, TickResult } from '../game/types'
 import { format } from '../game/format'
 import type { NumberFormatMode } from '../game/format'
 import { countOfType } from '../game/economy'
-import { critChanceFor, critAmountFor, powerCoreChanceFor, powerCoreAmountFor, refundFraction } from '../game/upgrades'
+import { critChanceFor, critAmountFor, refundFraction } from '../game/upgrades'
 import { formatDuration } from './formatDuration'
 
 export interface StatsPanelHandle {
@@ -46,8 +46,6 @@ export function createStatsPanel(container: HTMLElement): StatsPanelHandle {
     currentRunEnergy: makeRow(rows, 'Energy earned (current run)'),
     bestRunEnergy: makeRow(rows, 'Energy earned (best run)'),
     powerCores: makeRow(rows, 'Power cores'),
-    powerCoreChance: makeRow(rows, 'Power core chance'),
-    powerCoreAmount: makeRow(rows, 'Power core amount (per proc)'),
     removalRefundPct: makeRow(rows, 'Removal refund (cost to sell)'),
     highestBasic: makeRow(rows, 'Highest Basic value'),
     highestLeech: makeRow(rows, 'Highest Leech value'),
@@ -64,16 +62,15 @@ export function createStatsPanel(container: HTMLElement): StatsPanelHandle {
     v.ratePerHour.textContent = `${format(result.production.times(3600), formatMode)} / hr`
 
     // "Global" = the account-wide component from upgrades alone, with no
-    // per-cell level bonus mixed in - exactly what critChanceFor/
-    // critAmountFor already compute at basicLevel 0 (see upgrades.ts: the
-    // level-0 terms drop out, +0%/x1), so no separate formula needed here.
-    // An individual Basic's own tooltip (see grid.ts) adds its level bonus
-    // on top of this.
-    v.globalCritChance.textContent = `${(critChanceFor(state, 0) * 100).toFixed(1)}%`
-    v.globalCritAmount.textContent = `${critAmountFor(state, 0).toFixed(2)}x`
+    // Crit Tower bonus mixed in (isCritTower: false) - a plain Basic or
+    // Basic Steady's own tooltip (see grid.ts) shows exactly this; a Crit
+    // Tower's shows its own boosted figure instead.
+    v.globalCritChance.textContent = `${(critChanceFor(state, false) * 100).toFixed(1)}%`
+    v.globalCritAmount.textContent = `${critAmountFor(state, false).toFixed(2)}x`
 
-    const onBoard =
-      countOfType(state, 'basic') + countOfType(state, 'leech') + countOfType(state, 'buffV1') + countOfType(state, 'buffV2')
+    const onBoard = (
+      ['basic', 'leech', 'buff', 'buffStacker', 'buffAll', 'basicCrit', 'basicSteady', 'powerCoreGenerator'] as const
+    ).reduce((sum, type) => sum + countOfType(state, type), 0)
     v.generatorsOnBoard.textContent = String(onBoard)
     v.generatorsBuiltAllTime.textContent = String(state.totalGeneratorsBuilt)
     v.totalUpgrades.textContent = String(state.totalUpgrades)
@@ -84,8 +81,6 @@ export function createStatsPanel(container: HTMLElement): StatsPanelHandle {
     v.bestRunEnergy.textContent = format(state.bestRunEnergyEarned, formatMode)
 
     v.powerCores.textContent = format(state.powerCores, formatMode)
-    v.powerCoreChance.textContent = `${(powerCoreChanceFor(state) * 100).toFixed(1)}%`
-    v.powerCoreAmount.textContent = String(powerCoreAmountFor(state))
     v.removalRefundPct.textContent = `${(refundFraction(state) * 100).toFixed(0)}%`
 
     v.highestBasic.textContent = format(state.highestValue.basic, formatMode)

@@ -2,10 +2,9 @@ import { describe, it, expect } from 'vitest'
 import Decimal from 'break_infinity.js'
 import { makeGameState, cellIndex } from '../src/game/types'
 import type { GameState, CellType, Facing } from '../src/game/types'
-import { recalculate, advanceBuffs, expectedCritMultipliers, firePowerCoreGenerators } from '../src/game/engine'
-import { sumFloorDiv5, computeOfflineTicks, applyOfflineProgress } from '../src/game/offline'
-import { MAX_OFFLINE_TICKS, TICK_MS, BUFF_TICK_INTERVAL, OFFLINE_CRIT_VARIANCE } from '../src/game/config'
-import { powerCoreChanceFor, powerCoreAmountFor } from '../src/game/upgrades'
+import { recalculate, expectedCritMultipliers, firePowerCoreGenerators } from '../src/game/engine'
+import { computeOfflineTicks, applyOfflineProgress } from '../src/game/offline'
+import { MAX_OFFLINE_TICKS, TICK_MS, OFFLINE_CRIT_VARIANCE } from '../src/game/config'
 
 function place(state: GameState, x: number, y: number, type: CellType, level: number, facing?: Facing) {
   const i = cellIndex(x, y, state.width)
@@ -22,8 +21,8 @@ function buildInterestingBoard(): GameState {
   const state = makeGameState(5, 5)
   place(state, 0, 0, 'basic', 2)
   place(state, 4, 0, 'basic', 4)
-  place(state, 1, 0, 'buffV1', 1, 'left') // level 1: targets the basic at (0,0) plus its (off-board) opposite
-  place(state, 3, 0, 'buffV1', 0, 'right') // level 0: targets the basic at (4,0)
+  place(state, 1, 0, 'buff', 1, 'left') // 20%, facing the basic at (0,0)
+  place(state, 3, 0, 'buff', 0, 'right') // 10%, facing the basic at (4,0)
   place(state, 2, 2, 'leech', 2) // whole board
   place(state, 0, 4, 'leech', 0) // orthogonal, mostly empty neighbours - fine
   state.currency = new Decimal(500)
@@ -39,20 +38,19 @@ const NEUTRAL_RNG = () => 0.5
 /**
  * Mirrors engine.ts's tick() bookkeeping exactly, but uses the same constant
  * expectedCritMultipliers() applyOfflineProgress uses instead of a real
- * per-tick dice roll. This is the correct invariant to check now that crit
- * exists: applyOfflineProgress never claims to reproduce any particular
- * *realized* random sequence (that's the whole point of a closed form - no
- * per-tick simulation) - it claims to reproduce the exact expected value.
- * expectedCritMultipliers is itself constant across the whole gap (it
- * depends only on upgrades and each Basic's own level, neither of which
- * changes here), so this manual loop is a fair independent check of the
- * same linear-in-firings-so-far math applyOfflineProgress relies on.
+ * per-tick dice roll - the correct invariant to check, since a closed form
+ * never claims to reproduce any particular *realized* random sequence, only
+ * the exact expected value. Alpha 0.31: production is genuinely CONSTANT
+ * every tick now (Buffs no longer accumulate over time - see
+ * engine.ts resolveBuffMultipliers), so this loop is really just checking
+ * that N calls to the same recalculate() sum to N times one call - a much
+ * simpler invariant than the old buff-firing-interval math, but still worth
+ * an independent check rather than trusting the multiplication by inspection.
  */
 function manualExpectedSimulate(state: GameState, N: number): void {
   const multipliers = expectedCritMultipliers(state)
   for (let i = 0; i < N; i++) {
     state.tickCount += 1
-    if (state.tickCount % BUFF_TICK_INTERVAL === 0) advanceBuffs(state)
     const result = recalculate(state, multipliers)
     state.currency = state.currency.plus(result.production)
     state.lifetimeCurrencyEarned = state.lifetimeCurrencyEarned.plus(result.production)
@@ -62,29 +60,7 @@ function manualExpectedSimulate(state: GameState, N: number): void {
 function expectMatchesManualSimulation(offlineState: GameState, manualState: GameState): void {
   expect(offlineState.tickCount).toBe(manualState.tickCount)
   expect(offlineState.currency.toString()).toBe(manualState.currency.toString())
-  for (let i = 0; i < offlineState.cells.length; i++) {
-    expect(offlineState.cells[i].buffAccum.toString()).toBe(manualState.cells[i].buffAccum.toString())
-  }
 }
-
-describe('sumFloorDiv5', () => {
-  function naive(N: number): number {
-    let sum = 0
-    for (let j = 0; j < N; j++) sum += Math.floor(j / 5)
-    return sum
-  }
-
-  it('matches a naive loop across a range of N', () => {
-    for (const N of [0, 1, 2, 4, 5, 6, 7, 9, 10, 11, 23, 24, 25, 100, 137, 1000]) {
-      expect(sumFloorDiv5(N)).toBe(naive(N))
-    }
-  })
-
-  it('is 0 for N <= 0', () => {
-    expect(sumFloorDiv5(0)).toBe(0)
-    expect(sumFloorDiv5(-5)).toBe(0)
-  })
-})
 
 describe('applyOfflineProgress', () => {
   it('regression: closed-form total (expected-value crit, variance neutralised) matches an expected-value manual simulation exactly, for N = 1, 4, 5, 6, 100, 1000', () => {
@@ -99,13 +75,11 @@ describe('applyOfflineProgress', () => {
     }
   })
 
-  it('also matches manual simulation starting from a non-phase-aligned tickCount', () => {
+  it('also matches manual simulation starting from a non-zero tickCount (no more firing-phase alignment to worry about - Alpha 0.31 buffs are tick-invariant)', () => {
     for (const N of [1, 4, 5, 6, 23, 100]) {
       const base = buildInterestingBoard()
-      // Advance 3 ticks first so tickCount % 5 !== 0 - not aligned to a
-      // firing boundary, which is the case the closed form has to get right.
       manualExpectedSimulate(base, 3)
-      expect(base.tickCount % 5).not.toBe(0)
+      expect(base.tickCount).toBe(3)
 
       const offlineState = cloneState(base)
       const manualState = cloneState(base)
@@ -151,21 +125,14 @@ describe('applyOfflineProgress', () => {
 /**
  * Mirrors offlinePowerCoreGain's own claimed math step-by-step using the
  * real, already-tested firePowerCoreGenerators (per-cell period, mutates
- * coreProgress for real) plus a constant expected-value Power Core Chance
- * term (no rng - offlinePowerCoreGain never rolls dice for power cores,
- * unlike the ±variance roll energy gets), then routes both through the same
- * recalculate() leech-stealing pass real gameplay uses. An independent check
+ * coreProgress for real) routed through the same recalculate() leech-
+ * stealing + Buff-multiplier pass real gameplay uses. An independent check
  * of the same per-cell floor-division math applyOfflineProgress relies on.
  */
 function manualPowerCoreExpectedSimulate(state: GameState, N: number): void {
-  const chance = powerCoreChanceFor(state)
-  const amount = powerCoreAmountFor(state)
-  const chanceAmounts = state.cells.map((c) =>
-    c.type === 'basic' || c.type === 'leech' ? new Decimal(chance).times(amount) : new Decimal(0),
-  )
   for (let i = 0; i < N; i++) {
     const genAmounts = firePowerCoreGenerators(state)
-    const result = recalculate(state, undefined, genAmounts, chanceAmounts)
+    const result = recalculate(state, undefined, genAmounts)
     state.powerCores = state.powerCores.plus(result.powerCoreProduction)
   }
 }
@@ -179,22 +146,20 @@ function expectPowerCoresMatchManualSimulation(offlineState: GameState, manualSt
 
 /**
  * Two Power Core Generators at different levels (different periods) and
- * out-of-phase starting progress, plus a nearby orthogonal Leech and a
- * whole-board Leech (both also eligible for their own independent Power
- * Core Chance rolls) - deliberately no Basic/energy production on this
- * board, so currentRunEnergyEarned never crosses a power-core-exponent
- * threshold and checkPowerCoreExponents (called at the end of
- * applyOfflineProgress) can't award extra cores that would make this
- * comparison spuriously fail.
+ * out-of-phase starting progress, a nearby orthogonal Leech and a
+ * whole-board Leech, plus a Buff targeting one generator directly - the
+ * Buff is the important addition for Alpha 0.31: it's what actually
+ * exercises the "summing commutes with a constant Buff multiplier" claim
+ * offlinePowerCoreGain's rewrite relies on (see its own comment).
  */
 function buildPowerCoreBoard(): GameState {
   const state = makeGameState(5, 5)
-  place(state, 0, 0, 'powerCoreGenerator', 0) // period 10
-  place(state, 4, 4, 'powerCoreGenerator', 3) // period 7
-  state.cells[cellIndex(4, 4, 5)].coreProgress = 4 // not phase-aligned with tick 0
+  place(state, 0, 0, 'powerCoreGenerator', 0) // period 5
+  place(state, 4, 4, 'powerCoreGenerator', 3) // period 2
+  state.cells[cellIndex(4, 4, 5)].coreProgress = 1 // not phase-aligned with tick 0
   place(state, 1, 0, 'leech', 0) // orthogonal - reads (0,0)'s procs
   place(state, 2, 2, 'leech', 2) // whole board - reads both generators
-  state.powerCoreUpgrades.powerCoreChance = 5 // nonzero constant-rate term (2.5%)
+  place(state, 0, 1, 'buff', 4, 'up') // 50%, facing (0,0) directly
   return state
 }
 
@@ -230,6 +195,20 @@ describe('offlinePowerCoreGain (via applyOfflineProgress)', () => {
     const state = makeGameState(3, 3)
     const result = applyOfflineProgress(state, 50, NEUTRAL_RNG)
     expect(result.powerCoresGained.toString()).toBe('0')
+  })
+
+  it('a Buff targeting a Power Core Generator correctly multiplies its offline closed-form output too, not just the live per-tick one', () => {
+    const buffedState = makeGameState(2, 1)
+    place(buffedState, 0, 0, 'powerCoreGenerator', 0) // period 5
+    place(buffedState, 1, 0, 'buff', 4, 'left') // 50%, facing the generator
+
+    const unbuffedState = makeGameState(2, 1)
+    place(unbuffedState, 0, 0, 'powerCoreGenerator', 0)
+
+    const buffedResult = applyOfflineProgress(buffedState, 100, NEUTRAL_RNG)
+    const unbuffedResult = applyOfflineProgress(unbuffedState, 100, NEUTRAL_RNG)
+
+    expect(buffedResult.powerCoresGained.toNumber()).toBeCloseTo(unbuffedResult.powerCoresGained.toNumber() * 1.5, 6)
   })
 })
 

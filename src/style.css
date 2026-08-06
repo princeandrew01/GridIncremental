@@ -10,16 +10,25 @@
   --basic-color: #3a8f3a;
   --leech-color: #b53a3a;
   --buff-color: #b5943a;
-  --buffv2-color: #8a6a2a; /* darker gold - visually distinct from Buff V1 on the board */
-  --powercore-color: #3a7f9f; /* teal-blue - a resource, not a generator/buffer, so deliberately outside the green/red/gold family */
+  --buffall-color: #8a6a2a; /* darker gold - visually distinct from a plain Buff on the board */
+  --powercore-color: #3a7f9f; /* teal-blue - a resource, not a generator/buffer, so deliberately outside the rest of the family */
+  /* Alpha 0.31's 4 evolutions each get their own accent, one step removed
+     from the source type's own colour (so a Crit Tower still visibly reads
+     as "a kind of Basic", etc.) rather than sharing it outright. */
+  --basiccrit-color: #d9682b; /* hot orange - crit-flavoured */
+  --basicsteady-color: #2b8f6e; /* teal-green - steady, sturdy */
+  --buffstacker-color: #7a4fb5; /* violet - distinct from the buff/buffAll gold family */
   /* Shared between each cell-<type>'s background, its own border (so the
      grey/white grid border doesn't cut across a generator cell), and - for
-     buffV1 - the facing-arrow tab, so they're all pixel-identical. */
+     buff/buffStacker - the facing-arrow tab, so they're all pixel-identical. */
   --basic-cell-bg: color-mix(in srgb, canvas, var(--basic-color) 35%);
   --leech-cell-bg: color-mix(in srgb, canvas, var(--leech-color) 35%);
   --buff-cell-bg: color-mix(in srgb, canvas, var(--buff-color) 35%);
-  --buffv2-cell-bg: color-mix(in srgb, canvas, var(--buffv2-color) 35%);
+  --buffall-cell-bg: color-mix(in srgb, canvas, var(--buffall-color) 35%);
   --powercore-cell-bg: color-mix(in srgb, canvas, var(--powercore-color) 35%);
+  --basiccrit-cell-bg: color-mix(in srgb, canvas, var(--basiccrit-color) 35%);
+  --basicsteady-cell-bg: color-mix(in srgb, canvas, var(--basicsteady-color) 35%);
+  --buffstacker-cell-bg: color-mix(in srgb, canvas, var(--buffstacker-color) 35%);
 }
 
 * {
@@ -268,19 +277,34 @@ body {
   border-color: var(--leech-cell-bg);
 }
 
-.cell-buffV1 {
+.cell-buff {
   background: var(--buff-cell-bg);
   border-color: var(--buff-cell-bg);
 }
 
-.cell-buffV2 {
-  background: var(--buffv2-cell-bg);
-  border-color: var(--buffv2-cell-bg);
+.cell-buffAll {
+  background: var(--buffall-cell-bg);
+  border-color: var(--buffall-cell-bg);
 }
 
 .cell-powerCoreGenerator {
   background: var(--powercore-cell-bg);
   border-color: var(--powercore-cell-bg);
+}
+
+.cell-basicCrit {
+  background: var(--basiccrit-cell-bg);
+  border-color: var(--basiccrit-cell-bg);
+}
+
+.cell-basicSteady {
+  background: var(--basicsteady-cell-bg);
+  border-color: var(--basicsteady-cell-bg);
+}
+
+.cell-buffStacker {
+  background: var(--buffstacker-cell-bg);
+  border-color: var(--buffstacker-cell-bg);
 }
 
 .cell-selected {
@@ -292,43 +316,43 @@ body {
   opacity: 0.55;
 }
 
-/* Brief gold flash on a Basic that just critted. Re-applied fresh whenever
-   result.crits[i] is true on a given render - since a crit is a one-tick
-   event, the animation naturally clears itself before the next real crit
-   (if any) re-triggers it. prefers-reduced-motion already strips all
-   animations globally (see the bottom of this file). */
-.cell-crit {
-  animation: cell-crit-flash 0.6s ease-out;
+/* A one-shot number that floats up from the cell's center and fades out -
+   spawned fresh by grid.ts's spawnCritFloat() on the exact tick a
+   basic-family cell crits (replaces the old static "recently critted"
+   badge, which stayed pinned in a corner for several seconds - the user
+   asked for something that reacts to the actual moment instead). Duration
+   must match CRIT_FLOAT_MS in grid.ts, which is what actually removes the
+   element from the DOM - the animation itself has no `forwards` fill, it's
+   purely cosmetic timing. prefers-reduced-motion strips it like every other
+   animation (see the bottom of this file), leaving it to just pop in and
+   get removed - still readable, just not moving. */
+.cell-crit-float {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  padding: 0;
+  color: #ffcc33;
+  font-size: 0.6em;
+  font-weight: 700;
+  text-shadow: 0 1px 2px #000a;
+  pointer-events: none;
+  z-index: 3;
+  animation: cell-crit-float 0.9s ease-out forwards;
 }
 
-@keyframes cell-crit-flash {
+@keyframes cell-crit-float {
   0% {
-    box-shadow: 0 0 0 3px #ffcc33;
+    transform: translate(-50%, -50%) scale(0.8);
+    opacity: 0;
+  }
+  15% {
+    transform: translate(-50%, -50%) scale(1.15);
+    opacity: 1;
   }
   100% {
-    box-shadow: 0 0 0 3px #ffcc3300;
+    transform: translate(-50%, -180%) scale(1);
+    opacity: 0;
   }
-}
-
-/* Shows the crit multiplier directly on the cell for a few seconds after it
-   happens (see RECENT_CRIT_WINDOW_MS in grid.ts) - not left to a hover
-   tooltip, which takes too long to appear and won't refresh its text while
-   already showing, both a bad fit for something this time-sensitive. `em`
-   sizing tracks .cell's own responsive font-size, so the badge scales with
-   the board the same way the rest of the cell's text does. */
-.cell-crit-badge {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  padding: 0.05em 0.3em;
-  border-radius: 999px;
-  background: #ffcc33;
-  color: #1a1a1a;
-  font-size: 0.55em;
-  font-weight: 700;
-  line-height: 1.4;
-  pointer-events: none;
-  z-index: 2;
 }
 
 .cell-glyph {
@@ -342,12 +366,14 @@ body {
   opacity: 0.85;
 }
 
-/* A triangle tab attached to whichever edge of the cell the Buff currently
-   targets - moves to a different edge on rotation. Same fill colour as the
-   cell itself (--buff-cell-bg), and sized as a fraction of the cell's own
-   dimensions (not fixed px) so it scales across grid sizes. Its flat base
-   sits flush against the cell's actual visible border - not just its
-   padding edge - so it reads as one continuous attached shape.
+/* A triangle tab attached to whichever edge of the cell the Buff/Buff
+   Stacker currently targets - moves to a different edge on rotation. Same
+   fill colour as the cell itself (`inherit` picks up whichever of the two
+   directional types' own background is actually in effect - .cell-buff or
+   .cell-buffStacker - rather than hardcoding one), and sized as a fraction
+   of the cell's own dimensions (not fixed px) so it scales across grid
+   sizes. Its flat base sits flush against the cell's actual visible border -
+   not just its padding edge - so it reads as one continuous attached shape.
    Base width (how prominent it reads) and protrusion depth (how far it
    pokes out) are independent: base stays generous, protrusion stays short,
    so it looks attached rather than sticking far out.
@@ -356,7 +382,7 @@ body {
    the cell, apex pointing outward. */
 .cell-facing-arrow {
   position: absolute;
-  background: var(--buff-cell-bg);
+  background: inherit;
   pointer-events: none;
   /* Above sibling cells regardless of DOM order, since it protrudes past
      the 2px grid gap and would otherwise be painted over by whichever
@@ -460,24 +486,31 @@ body {
   margin-top: 0;
 }
 
+/* One row per type, same list shape as the Upgrades tab (.upgrade-row) -
+   replaces the original flex-wrap grid of standalone card buttons. */
 .build-buttons {
   display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
+  flex-direction: column;
 }
 
 .build-button {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 0.3rem;
-  padding: 0.5rem;
-  border: 1px solid transparent;
-  border-radius: 6px;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.6rem 0.3rem;
+  border: none;
+  border-bottom: 1px solid #8886;
+  border-radius: 0;
   background: transparent;
   color: canvastext;
   font: inherit;
+  text-align: left;
   cursor: pointer;
+}
+
+.build-button:last-child {
+  border-bottom: none;
 }
 
 /* Author stylesheets override the UA's default `[hidden] { display: none }`
@@ -490,27 +523,41 @@ body {
   display: none;
 }
 
-/* Icon reuses the same cell-<type> background classes as the grid, so the
-   build picker literally matches the colours already on the board. */
-.build-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 2.5rem;
-  height: 2.5rem;
-  border: 1px solid #8886;
+/* Colour swatch reusing the same cell-<type> background classes as the grid
+   itself (border-color included, though it's not visible on a borderless
+   square), so the build picker still matches the colours already on the
+   board even without the old letter-glyph icon box. */
+.build-swatch {
+  flex: 0 0 auto;
+  display: block;
+  width: 1.4rem;
+  height: 1.4rem;
   border-radius: 4px;
-  font-weight: 700;
-  font-size: 1.1rem;
+}
+
+.build-info {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
 }
 
 .build-name {
-  font-size: 0.75rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.build-desc {
+  font-size: 0.78rem;
+  opacity: 0.7;
 }
 
 .build-cost {
-  font-size: 0.7rem;
-  opacity: 0.75;
+  flex: 0 0 auto;
+  font-size: 0.8rem;
+  opacity: 0.8;
+  white-space: nowrap;
 }
 
 .build-button:focus-visible {
@@ -523,11 +570,6 @@ body {
   background: color-mix(in srgb, canvas, #4a9eff 12%);
 }
 
-.build-button-active .build-icon {
-  outline: 2px solid #4a9eff;
-  outline-offset: 1px;
-}
-
 .build-button:disabled,
 .upgrade-button:disabled,
 .remove-button:disabled {
@@ -535,20 +577,27 @@ body {
   cursor: not-allowed;
 }
 
+/* Stacked, full-width, one on top of the other - side-by-side used to let a
+   long cost string (Upgrade's grows unbounded with the game's numbers)
+   shove Remove around or wrap it onto its own line unpredictably. Full
+   width removes the layout dependency on the other button's text length
+   entirely - each row sizes to its own content only. */
 .detail-actions {
   display: flex;
+  flex-direction: column;
   gap: 0.5rem;
   margin-top: 0.5rem;
-  flex-wrap: wrap;
 }
 
 .upgrade-button,
 .remove-button {
+  width: 100%;
   padding: 0.5rem 0.9rem;
   border: 1px solid #8888;
   background: canvas;
   color: canvastext;
   font: inherit;
+  text-align: center;
   cursor: pointer;
 }
 
@@ -582,6 +631,53 @@ body {
   font-size: 0.8rem;
   opacity: 0.75;
   margin-bottom: 0.2rem;
+}
+
+/* Evolve section: sits right after Upgrade/Remove in the detail view (see
+   panel.ts's reordered layout - name, then every action including Evolve,
+   then Stats at the bottom) - only shown at all once a Basic/Buff is maxed. */
+.evolve-section h3 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+  margin: 0.75rem 0 0.4rem;
+}
+
+.evolve-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.evolve-button {
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--buffstacker-color);
+  border-radius: 4px;
+  background: color-mix(in srgb, canvas, var(--buffstacker-color) 10%);
+  color: canvastext;
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.evolve-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.evolve-button:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+}
+
+.panel-stats-heading {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+  margin: 0.75rem 0 0.4rem;
 }
 
 .panel-next-level {
@@ -714,6 +810,16 @@ body {
   margin-top: 0.2rem;
 }
 
+/* The upgrade's actual current EFFECT at its level (e.g. "-120ms / tick"),
+   not just the level number - added after the user pointed out the level
+   alone doesn't say what it's actually doing right now. */
+.upgrade-current-value {
+  font-size: 0.78rem;
+  font-weight: 600;
+  opacity: 0.9;
+  margin-top: 0.1rem;
+}
+
 .upgrade-cost {
   font-size: 0.8rem;
   opacity: 0.8;
@@ -721,11 +827,45 @@ body {
   white-space: nowrap;
 }
 
-.upgrade-buy-row {
+/* Sticky quantity toolbar (1x/10x/25x/Max) at the top of the Upgrades and
+   Power Cores tabs - picked once here instead of repeating 4 buy buttons on
+   every single row (the old layout). `position: sticky` pins it to the top
+   of .tab-content-area, its own nearest scrolling ancestor, so it stays
+   visible while the rows below it scroll past underneath - the background
+   below matches .panel-bordered's exactly so scrolled-under content doesn't
+   show through the seam. */
+.upgrade-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   display: flex;
-  gap: 0.4rem;
-  flex: 0 0 auto;
-  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem 0 0.75rem;
+  margin-bottom: 0.25rem;
+  background: color-mix(in srgb, canvas, canvastext 3%);
+  border-bottom: 1px solid #8886;
+}
+
+.upgrade-toolbar-button {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid #8888;
+  border-radius: 4px;
+  background: canvas;
+  color: canvastext;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.upgrade-toolbar-button-active {
+  border-color: #4a9eff;
+  background: color-mix(in srgb, canvas, #4a9eff 15%);
+}
+
+.upgrade-toolbar-button:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
 }
 
 .upgrade-buy-button {
@@ -952,6 +1092,21 @@ body {
 
 .settings-select:focus-visible,
 .settings-slider:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 2px;
+}
+
+.settings-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.7rem;
+  font-size: 0.8rem;
+  opacity: 0.8;
+  cursor: pointer;
+}
+
+.settings-checkbox-row input[type='checkbox']:focus-visible {
   outline: 2px solid #4a9eff;
   outline-offset: 2px;
 }

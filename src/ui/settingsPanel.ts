@@ -105,7 +105,21 @@ export function createSettingsPanel(
     onChange(current)
   })
 
-  popover.append(heading, formatLabel, formatSelect, volumeLabel, volumeInput, themeLabel, themeSelect)
+  const descRow = document.createElement('label')
+  descRow.className = 'settings-checkbox-row'
+  const descCheckbox = document.createElement('input')
+  descCheckbox.id = 'settings-show-build-descriptions'
+  descCheckbox.type = 'checkbox'
+  descCheckbox.checked = current.showBuildDescriptions
+  descCheckbox.addEventListener('change', () => {
+    current = { ...current, showBuildDescriptions: descCheckbox.checked }
+    onChange(current)
+  })
+  const descRowLabel = document.createElement('span')
+  descRowLabel.textContent = 'Show generator descriptions in Build tab'
+  descRow.append(descCheckbox, descRowLabel)
+
+  popover.append(heading, formatLabel, formatSelect, volumeLabel, volumeInput, themeLabel, themeSelect, descRow)
 
   toggleButton.addEventListener('click', (e) => {
     e.stopPropagation() // don't let the document-level "click away deselects" listener see this
