@@ -198,8 +198,9 @@ export const UPGRADE_COST: Record<UpgradeId, ExponentialCurve | QuadraticCurve> 
   // This upgrade's cost IS the Power Core Generator's placement cost, not a
   // separate gate on top of one - buying level N is simultaneously "affording
   // your Nth generator" (confirmed with the user). Level 1 = 1,000,000,
-  // doubling every level after (1M -> 2M -> 4M -> 8M -> 16M).
-  powerGeneratorCount: { kind: 'exponential', baseCost: 1_000_000, growth: 2 },
+  // x10 every level after (1M -> 10M -> 100M -> 1B -> 10B) - bumped from an
+  // initial x2 per the user's own follow-up call.
+  powerGeneratorCount: { kind: 'exponential', baseCost: 1_000_000, growth: 10 },
 }
 
 // --- Power Cores: a second resource with its own meta-progression menu
