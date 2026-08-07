@@ -51,7 +51,7 @@ export const UPGRADE_DESCRIPTION: Record<UpgradeId, string> = {
   critAmount: `+${CRIT_AMOUNT_UPGRADE_PER_LEVEL}x crit amount.`,
   removalRefund: `+${REMOVAL_REFUND_PER_LEVEL * 100}% currency refunded on Remove.`,
   gridSize: `+${GRID_SIZE_PER_LEVEL} to both grid dimensions.`,
-  powerGeneratorCount: 'Unlocks (and raises the cap on) the Power Core Generator - each level both allows one more and pays for it, no separate placement cost.',
+  powerGeneratorCount: 'Unlocks (and raises the cap on) the Power Core Generator - each level allows one more on the board at once. Placing one still costs its own separate Energy fee.',
 }
 
 /** The board size a given Grid Size upgrade level targets - GRID_W (the starting 4x4) plus 1 per level. */
@@ -156,10 +156,10 @@ export function generatorValueMultiplier(state: GameState): number {
 
 /**
  * Chance [0,1] that a Basic-family cell crits this tick: global base + the
- * Crit Chance upgrade (additive), plus the Crit Tower evolution's own +30
+ * Crit Chance upgrade (additive), plus the Crit Generator evolution's own +30
  * percentage points if `isCritTower` (confirmed with the user - additive,
  * "supposed to be powerful"). Alpha 0.31: a cell's own level no longer
- * contributes anything - that moved entirely to the Crit Tower evolution.
+ * contributes anything - that moved entirely to the Crit Generator evolution.
  */
 export function critChanceFor(state: GameState, isCritTower: boolean): number {
   return CRIT_BASE_CHANCE + CRIT_CHANCE_UPGRADE_PER_LEVEL * state.upgrades.critChance + (isCritTower ? CRIT_TOWER_CHANCE_BONUS : 0)
@@ -169,7 +169,7 @@ export function critChanceFor(state: GameState, isCritTower: boolean): number {
  * Multiplier applied on a crit: (global base + the Crit Amount upgrade),
  * further multiplied by x100 if `isCritTower` (confirmed with the user -
  * multiplicative, e.g. a 5x account crit amount becomes 500x on an evolved
- * Crit Tower). Alpha 0.31: a cell's own level no longer contributes.
+ * Crit Generator). Alpha 0.31: a cell's own level no longer contributes.
  */
 export function critAmountFor(state: GameState, isCritTower: boolean): number {
   const globalAmount = CRIT_BASE_AMOUNT + CRIT_AMOUNT_UPGRADE_PER_LEVEL * state.upgrades.critAmount
@@ -193,10 +193,11 @@ export function totalGridSizeLevel(state: GameState): number {
 }
 
 /**
- * How many Power Core Generators are currently allowed on the board - the
- * Power Generator Count upgrade both gates and pays for each one (see
- * config.ts UPGRADE_COST.powerGeneratorCount), so there's no separate
- * "unlocked" flag or placement price to track alongside this.
+ * How many Power Core Generators are currently allowed on the board - purely
+ * a cap, raised by the Power Generator Count upgrade. Placing one still
+ * costs its own separate Energy fee on top of this (see economy.ts
+ * placementCost) - this upgrade only gates the COUNT, it doesn't pay for
+ * any of them.
  */
 export function powerCoreGeneratorCap(state: GameState): number {
   return state.upgrades.powerGeneratorCount

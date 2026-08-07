@@ -232,19 +232,21 @@ export function migrate(save: SaveData): SaveData {
     //   Buff 0-9, everything else unchanged), so no level clamping is
     //   needed - old values already fit the new ranges.
     //
-    // - Power Core Generator cells: placement is free now (paid entirely
-    //   through the new `powerGeneratorCount` Energy upgrade - see
-    //   economy.ts), so any pre-existing generator's real (Power-Core-
-    //   denominated) placementCost is zeroed out here. Without this,
-    //   removeCell's new "always refund Energy" logic - which is only safe
-    //   for a *new* generator, whose placementCost is always exactly 0 -
-    //   would wrongly refund Energy using a number that was actually paid
-    //   in Power Cores, for a pre-0.31 generator specifically. No refund
-    //   is invented for the "lost" old cost, consistent with this file's
-    //   established precedent (see the v2->v3 step) of not backfilling a
-    //   refund for value that predates the mechanic tracking it.
-    //   coreProgress is also wrapped into whatever the new (possibly
-    //   shorter) period for that level is, in case it no longer fits.
+    // - Power Core Generator cells: a pre-existing generator's real (Power-
+    //   Core-denominated, pre-0.31 pricing) placementCost is zeroed out
+    //   here rather than converted - there's no principled way to translate
+    //   an old Power-Core cost into the new Energy-priced placement curve
+    //   (see economy.ts placementCost), so 0 is the safe, conservative
+    //   choice: removeCell's "always refund Energy" logic then just gives
+    //   no refund for that specific legacy cell, rather than wrongly
+    //   refunding Energy using a number that was actually paid in Power
+    //   Cores. No refund is invented for the "lost" old cost, consistent
+    //   with this file's established precedent (see the v2->v3 step) of not
+    //   backfilling a refund for value that predates the mechanic tracking
+    //   it. Every generator placed AFTER loading gets a real placementCost
+    //   again as normal, via placeCell. coreProgress is also wrapped into
+    //   whatever the new (possibly shorter) period for that level is, in
+    //   case it no longer fits.
     //
     // - `upgrades.powerGeneratorCount` backfills to 0 (genuinely new key,
     //   same merge-over-defaults pattern as v4->v5's gridSize backfill) -

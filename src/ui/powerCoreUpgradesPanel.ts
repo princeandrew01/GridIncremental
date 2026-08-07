@@ -2,15 +2,7 @@ import type { GameState } from '../game/types'
 import type { PowerCoreUpgradeId } from '../game/types'
 import { format } from '../game/format'
 import type { NumberFormatMode } from '../game/format'
-import {
-  POWER_CORE_UPGRADE_IDS,
-  POWER_CORE_UPGRADE_LABEL,
-  POWER_CORE_UPGRADE_DESCRIPTION,
-  pcMaxLevelFor,
-  pcBulkUpgradeCost,
-  pcMaxAffordableCount,
-  isPowerCoreUpgradeLocked,
-} from '../game/powerCoreUpgrades'
+import { POWER_CORE_UPGRADE_IDS, POWER_CORE_UPGRADE_LABEL, pcMaxLevelFor, pcBulkUpgradeCost, pcMaxAffordableCount } from '../game/powerCoreUpgrades'
 
 export interface PowerCoreUpgradesPanelHandle {
   update(state: GameState, formatMode: NumberFormatMode): void
@@ -23,16 +15,14 @@ const BUY_COUNTS: BuyCount[] = [1, 10, 25, 'max']
 
 interface RowEls {
   name: HTMLElement
-  desc: HTMLElement
   level: HTMLElement
   value: HTMLElement
   cost: HTMLElement
   buyButton: HTMLButtonElement
 }
 
-/** How many of `id` the player currently has, in plain English - "N slot(s) allowed" for the 4 evolution-slot upgrades, or the actual board size for Grid Size (same figure the Upgrades tab shows for its own Grid Size track, since the two combine - see upgrades.ts totalGridSizeLevel). Locked slot upgrades return '' - showing even a count would weakly hint at what's behind them. */
+/** How many of `id` the player currently has, in plain English - "N slot(s) allowed" for the 4 evolution-slot upgrades, or the actual board size for Grid Size (same figure the Upgrades tab shows for its own Grid Size track, since the two combine - see upgrades.ts totalGridSizeLevel). */
 function currentValueText(state: GameState, id: PowerCoreUpgradeId): string {
-  if (isPowerCoreUpgradeLocked(state, id)) return ''
   if (id === 'gridSize') return `${state.width}×${state.height}`
   const level = state.powerCoreUpgrades[id]
   return `${level.toLocaleString()} slot${level === 1 ? '' : 's'} allowed`
@@ -99,13 +89,11 @@ export function createPowerCoreUpgradesPanel(
     info.className = 'upgrade-info'
     const name = document.createElement('div')
     name.className = 'upgrade-name'
-    const desc = document.createElement('div')
-    desc.className = 'upgrade-description'
     const level = document.createElement('div')
     level.className = 'upgrade-level'
     const value = document.createElement('div')
     value.className = 'upgrade-current-value'
-    info.append(name, desc, level, value)
+    info.append(name, level, value)
 
     const cost = document.createElement('div')
     cost.className = 'upgrade-cost'
@@ -121,7 +109,7 @@ export function createPowerCoreUpgradesPanel(
 
     row.append(info, cost, buyButton)
     container.appendChild(row)
-    rows.set(id, { name, desc, level, value, cost, buyButton })
+    rows.set(id, { name, level, value, cost, buyButton })
   }
 
   function update(state: GameState, formatMode: NumberFormatMode): void {
@@ -132,12 +120,7 @@ export function createPowerCoreUpgradesPanel(
       const current = state.powerCoreUpgrades[id]
       const max = pcMaxLevelFor(id)
       const maxed = current >= max
-      // The 4 evolution-slot upgrades hide their real name/description until
-      // at least 1 level is bought ("Locked") - confirmed with the user
-      // (Grid Size is never locked, see isPowerCoreUpgradeLocked).
-      const locked = isPowerCoreUpgradeLocked(state, id)
-      els.name.textContent = locked ? 'Locked' : POWER_CORE_UPGRADE_LABEL[id]
-      els.desc.textContent = locked ? '' : POWER_CORE_UPGRADE_DESCRIPTION[id]
+      els.name.textContent = POWER_CORE_UPGRADE_LABEL[id]
       els.level.textContent = `Level ${current.toLocaleString()} / ${max.toLocaleString()}`
       const valueText = currentValueText(state, id)
       els.value.textContent = valueText ? `Current: ${valueText}` : ''
@@ -157,7 +140,7 @@ export function createPowerCoreUpgradesPanel(
       } else {
         const cost = pcBulkUpgradeCost(id, current, count)
         const affordable = state.powerCores.gte(cost)
-        els.cost.textContent = `Cost: ${format(cost, formatMode)}`
+        els.cost.textContent = `Cost: 🔵 ${format(cost, formatMode)}`
         els.buyButton.disabled = !affordable
         els.buyButton.textContent = `Buy x${count.toLocaleString()}`
       }

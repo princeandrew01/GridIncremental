@@ -57,7 +57,7 @@ function buildInterestingState(): GameState {
   const powerCoreGenerator = state.cells[cellIndex(3, 1, 4)]
   powerCoreGenerator.type = 'powerCoreGenerator'
   powerCoreGenerator.level = 2
-  powerCoreGenerator.placementCost = new Decimal(0) // always 0 now - placement is free (see economy.ts)
+  powerCoreGenerator.placementCost = new Decimal(0) // this particular fixture cell just happens to have a 0 placementCost (e.g. a legacy pre-0.31 migrated cell) - placement is real Energy again now, see economy.ts
   powerCoreGenerator.coreProgress = 2
 
   // Beyond Number.MAX_VALUE (~1.8e308) - the whole reason break_infinity
@@ -425,7 +425,7 @@ describe('save/load', () => {
       width: 2,
       height: 1,
       cells: [
-        { t: 5, l: 1, b: '0', f: 'up', p: '250', cp: 8 }, // a real Alpha-0.3 Power Core Generator: cost 250 power cores, level 1 (old period 9), coreProgress 8 - doesn't fit the new period (4) at all
+        { t: 5, l: 1, b: '0', f: 'up', p: '250', cp: 15 }, // a real Alpha-0.3 Power Core Generator: cost 250 power cores, level 1 (old period 9), coreProgress 15 - doesn't fit the new period (9) at all
         { t: 0, l: 0, b: '0', f: 'up', p: '0', cp: 0 },
       ],
       currency: '0',
@@ -461,7 +461,7 @@ describe('save/load', () => {
     const migrated = migrate(v6Save as unknown as SaveData)
     expect(migrated.version).toBe(7)
     expect(migrated.cells[0].p).toBe('0') // zeroed - was 250 power cores, now nothing to refund
-    expect(migrated.cells[0].cp).toBeLessThan(4) // wrapped into the new (level 1 -> period 4) range
+    expect(migrated.cells[0].cp).toBeLessThan(9) // wrapped into the new (level 1 -> period 9) range
     expect(migrated.cells[0].t).toBe(5) // still a Power Core Generator - type/level untouched
     expect(migrated.cells[0].l).toBe(1)
 

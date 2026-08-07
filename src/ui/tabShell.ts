@@ -1,6 +1,8 @@
 export interface TabDef {
   id: string
   label: string
+  /** Shown on the rail button itself (an icon glyph) - `label` still powers the tooltip/aria-label, since a bare icon alone isn't self-explanatory. */
+  icon: string
 }
 
 export interface TabShellHandle {
@@ -8,12 +10,18 @@ export interface TabShellHandle {
   contentContainer(id: string): HTMLElement
   /** Switches to this tab programmatically, same as clicking its button - fires onTabChange too. */
   activateTab(id: string): void
+  /** Changes a rail button's icon/label after construction - for a tab whose identity depends on live state (e.g. main.ts's "selected cell" tab, which shows whatever type is currently selected). */
+  setTabIcon(id: string, icon: string, label: string): void
+  /** Shows/hides a rail button - for a tab that only makes sense some of the time (e.g. "selected cell", hidden whenever nothing's selected). Hiding the currently-active tab does NOT auto-switch away; the caller is responsible for that (see main.ts). */
+  setTabHidden(id: string, hidden: boolean): void
 }
 
 /**
- * A vertical tab strip + one content area per tab, toggled by `display`.
- * Exactly one tab's content is visible at a time. No animation - respects
- * prefers-reduced-motion, already handled globally in style.css.
+ * An icon rail (on the right edge of the right zone, see style.css
+ * .tab-shell) + one content area per tab, the open one's content sitting to
+ * the rail's left. Exactly one tab's content is visible at a time. No
+ * animation - respects prefers-reduced-motion, already handled globally in
+ * style.css.
  *
  * `onTabChange`, if given, fires on every activation (button click or
  * programmatic via activateTab) with the newly-active tab id - main.ts uses
@@ -55,7 +63,9 @@ export function createTabShell(
     const btn = document.createElement('button')
     btn.type = 'button'
     btn.className = 'tab-button'
-    btn.textContent = tab.label
+    btn.textContent = tab.icon
+    btn.title = tab.label
+    btn.setAttribute('aria-label', tab.label)
     btn.setAttribute('role', 'tab')
     btn.addEventListener('click', () => activate(tab.id))
     strip.appendChild(btn)
@@ -77,5 +87,17 @@ export function createTabShell(
       return el
     },
     activateTab: activate,
+    setTabIcon(id: string, icon: string, label: string): void {
+      const btn = buttons.get(id)
+      if (!btn) throw new Error(`Unknown tab id: ${id}`)
+      btn.textContent = icon
+      btn.title = label
+      btn.setAttribute('aria-label', label)
+    },
+    setTabHidden(id: string, hidden: boolean): void {
+      const btn = buttons.get(id)
+      if (!btn) throw new Error(`Unknown tab id: ${id}`)
+      btn.hidden = hidden
+    },
   }
 }

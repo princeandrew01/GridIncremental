@@ -5,7 +5,6 @@ import type { NumberFormatMode } from '../game/format'
 import {
   UPGRADE_IDS,
   UPGRADE_LABEL,
-  UPGRADE_DESCRIPTION,
   maxLevelFor,
   bulkUpgradeCost,
   maxAffordableCount,
@@ -71,7 +70,7 @@ export function createUpgradesPanel(container: HTMLElement, onBuy: (id: UpgradeI
   container.classList.add('panel-section', 'upgrades-panel')
 
   const heading = document.createElement('h2')
-  heading.textContent = 'Upgrades'
+  heading.textContent = 'Energy'
   container.appendChild(heading)
 
   // Buy buttons read `latestState`/`latestFormatMode` at click/toolbar-toggle
@@ -124,14 +123,11 @@ export function createUpgradesPanel(container: HTMLElement, onBuy: (id: UpgradeI
     const name = document.createElement('div')
     name.className = 'upgrade-name'
     name.textContent = UPGRADE_LABEL[id]
-    const desc = document.createElement('div')
-    desc.className = 'upgrade-description'
-    desc.textContent = UPGRADE_DESCRIPTION[id]
     const level = document.createElement('div')
     level.className = 'upgrade-level'
     const value = document.createElement('div')
     value.className = 'upgrade-current-value'
-    info.append(name, desc, level, value)
+    info.append(name, level, value)
 
     const cost = document.createElement('div')
     cost.className = 'upgrade-cost'
@@ -178,7 +174,7 @@ export function createUpgradesPanel(container: HTMLElement, onBuy: (id: UpgradeI
       } else {
         const cost = bulkUpgradeCost(id, current, count)
         const affordable = state.currency.gte(cost)
-        els.cost.textContent = `Cost: ${format(cost, formatMode)}`
+        els.cost.textContent = `Cost: ⚡ ${format(cost, formatMode)}`
         els.buyButton.disabled = !affordable
         els.buyButton.textContent = `Buy x${count.toLocaleString()}`
       }

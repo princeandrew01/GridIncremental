@@ -1,7 +1,16 @@
 import Decimal from 'break_infinity.js'
 import type { CellType, Facing, GameState, TickResult } from './types'
 import { cellIndex } from './types'
-import { BASIC_BASE_VALUE, BASIC_MULT, STEADY_TOWER_MULT, BUFF_PCT_PER_LEVEL, POWER_CORE_GENERATOR_BASE_TICKS, POWER_CORE_GENERATOR_TICKS_PER_LEVEL } from './config'
+import {
+  BASIC_BASE_VALUE,
+  BASIC_MULT,
+  STEADY_TOWER_MULT,
+  BUFF_PCT_PER_LEVEL,
+  POWER_CORE_GENERATOR_BASE_TICKS,
+  POWER_CORE_GENERATOR_TICKS_PER_LEVEL,
+  POWER_CORE_GENERATOR_BASE_AMOUNT,
+  POWER_CORE_GENERATOR_AMOUNT_PER_LEVEL,
+} from './config'
 import { generatorValueMultiplier, basicValueBonus, critChanceFor, critAmountFor } from './upgrades'
 
 function inBounds(x: number, y: number, width: number, height: number): boolean {
@@ -282,8 +291,8 @@ export function expectedCritMultipliers(state: GameState): number[] {
 }
 
 /**
- * A Power Core Generator's period in ticks - how often it produces (5 at
- * level 0, down to 1 at level 4 - a per-cell value, since every generator is
+ * A Power Core Generator's period in ticks - how often it produces (10 at
+ * level 0, down to 1 at level 9 - a per-cell value, since every generator is
  * leveled independently rather than sharing one global timer).
  */
 export function powerCoreGeneratorPeriod(level: number): number {
@@ -291,13 +300,23 @@ export function powerCoreGeneratorPeriod(level: number): number {
 }
 
 /**
+ * A Power Core Generator's own proc amount - how many cores a single proc is
+ * worth, before any Buff multiplier (1 at level 0, up to 10 at level 9 -
+ * the user's own redesign: period and amount now both scale with level, so
+ * a maxed generator is 10x faster AND worth 10x more per proc than a fresh
+ * one, not just faster).
+ */
+export function powerCoreGeneratorAmount(level: number): number {
+  return POWER_CORE_GENERATOR_BASE_AMOUNT + level * POWER_CORE_GENERATOR_AMOUNT_PER_LEVEL
+}
+
+/**
  * Advances every Power Core Generator's progress by exactly one real tick,
  * mutating `coreProgress` for real, and returns how many power cores each
  * cell produced THIS tick (0 for cells that didn't cross their period
- * boundary, or aren't a generator) - always exactly 1 core per proc before
- * any Buff multiplier (the old Power Core Amount upgrade that used to scale
- * this is gone - see config.ts). This is what recalculate() uses to seed
- * `basePowerCores` for a live tick - offline catch-up uses its own
+ * boundary, or aren't a generator; powerCoreGeneratorAmount(level)
+ * otherwise, before any Buff multiplier). This is what recalculate() uses
+ * to seed `basePowerCores` for a live tick - offline catch-up uses its own
  * closed-form per-cell-period derivation instead (see offline.ts), since
  * this per-tick approach doesn't scale to a day-long gap.
  */
@@ -311,10 +330,41 @@ export function firePowerCoreGenerators(state: GameState): Decimal[] {
     cell.coreProgress += 1
     if (cell.coreProgress >= period) {
       cell.coreProgress -= period
-      amounts[i] = new Decimal(1)
+      amounts[i] = new Decimal(powerCoreGeneratorAmount(cell.level))
     }
   }
   return amounts
+}
+
+/**
+ * Full expected power-core TickResult, board-wide - a stable, non-jumpy
+ * figure for display, the same spirit as expectedCritMultipliers on the
+ * Energy side. Each generator's own expected per-tick output is
+ * `amount / period` (a fractional "amount", since over `period` ticks it
+ * procs exactly once for `amount` cores) - fed into the real recalculate()
+ * as if it were this tick's actual proc amounts, the same trick offline.ts
+ * uses for N-tick catch-up totals. That single call then gets Leech-
+ * stealing, Buff multipliers, and the leech-duplication behaviour (see
+ * recalculate()'s doc comment) exactly right for free, instead of re-
+ * deriving that whole pipeline by hand a second time. Exposed as the full
+ * result (not just the board-wide total) so a caller can also read a
+ * SPECIFIC cell's own expected share - e.g. the grid's own per-cell display,
+ * which otherwise has no way to show what a Leech is expected to steal in
+ * Power Cores (the "display" recalculate() calls elsewhere never simulate a
+ * generator proc at all, so finalPowerCores is always 0 on those).
+ */
+export function expectedPowerCoreResult(state: GameState): TickResult {
+  const amounts: Decimal[] = state.cells.map((cell) =>
+    cell.type === 'powerCoreGenerator'
+      ? new Decimal(powerCoreGeneratorAmount(cell.level)).div(powerCoreGeneratorPeriod(cell.level))
+      : new Decimal(0),
+  )
+  return recalculate(state, undefined, amounts)
+}
+
+/** Just the board-wide total from expectedPowerCoreResult - see its own doc comment. */
+export function expectedPowerCoreProductionPerTick(state: GameState): Decimal {
+  return expectedPowerCoreResult(state).powerCoreProduction
 }
 
 /**

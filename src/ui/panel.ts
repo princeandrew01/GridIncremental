@@ -6,20 +6,20 @@ import {
   placementCost,
   canAffordPlacement,
   isBuildable,
-  upgradeCost,
-  canUpgrade,
   isMaxLevel,
   removeRefund,
-  currencyFor,
   countOfType,
   canEvolve,
   evolutionConversionCost,
   evolutionSlotCap,
+  currencyFor,
+  cellBulkUpgradeCost,
+  cellMaxAffordableUpgradeCount,
 } from '../game/economy'
 import type { PlaceableType, EvolutionType } from '../game/economy'
 import { MAX_LEVEL, LEECH_RANGE_LABEL, BUFF_PCT_PER_LEVEL, CRIT_TOWER_CHANCE_BONUS, CRIT_TOWER_AMOUNT_MULT, STEADY_TOWER_MULT, BASIC_MULT } from '../game/config'
-import { critChanceFor, critAmountFor } from '../game/upgrades'
-import { powerCoreGeneratorPeriod, facingTargetIndex, resolveBuffMultipliers, resolveEffectiveBuffMultipliers } from '../game/engine'
+import { critChanceFor, critAmountFor, powerCoreGeneratorCap } from '../game/upgrades'
+import { powerCoreGeneratorPeriod, powerCoreGeneratorAmount, facingTargetIndex, resolveBuffMultipliers, resolveEffectiveBuffMultipliers } from '../game/engine'
 import type { GridSelection } from './grid'
 import { TYPE_LABEL } from './grid'
 
@@ -39,13 +39,20 @@ const FACING_LABEL: Record<string, string> = {
   left: 'Left',
 }
 
+// Same icons as the resources header (see ui/currencyHeader.ts) - shown
+// next to a cost so which currency it's denominated in is obvious at a
+// glance, since leveling a placed cell isn't always Energy (the Power Core
+// Generator's own level-up cost is Power Cores, everything else is Energy -
+// easy to lose track of without a visual cue, per the user).
+const RESOURCE_ICON: Record<'energy' | 'powerCores', string> = { energy: '⚡', powerCores: '🔵' }
+
 // One-line explanation shown at the top of a selected cell's detail view
 // (and as a build-button tooltip, once discovered - see "???" handling
 // below) - so the mechanics behind each type aren't only discoverable by
 // reading raw numbers.
-const TYPE_DESCRIPTION: Record<string, string> = {
+export const TYPE_DESCRIPTION: Record<string, string> = {
   basic:
-    "Produces energy every tick. This cell's own level (up to 10) and any Buff facing it are both private multipliers on its own output - and a nearby Leech steals a share of that FULL realized output, level/Buff included, not just the account-wide raw value. Maxed, it can evolve into a Crit Tower or a Basic Steady Tower.",
+    "Produces energy every tick. This cell's own level (up to 10) and any Buff facing it are both private multipliers on its own output - and a nearby Leech steals a share of that FULL realized output, level/Buff included, not just the account-wide raw value. Maxed, it can evolve into a Crit Generator or a Basic Steady Tower.",
   leech:
     "Produces no energy or power cores of its own - instead steals a share of every nearby non-Leech cell's actual output (energy and power cores both - crit, level/evolution multiplier, and any Buff on that cell all included). Range grows with level, up to the whole board.",
   buff:
@@ -59,11 +66,11 @@ const TYPE_DESCRIPTION: Record<string, string> = {
   basicSteady:
     "Evolved from a maxed Basic. Multiplies this cell's own output by a flat x10 on top of its level multiplier. No further leveling (for now).",
   powerCoreGenerator:
-    'Produces exactly 1 power core on a delay instead of every tick - faster at higher levels. A Buff facing it boosts its output like any other producer.',
+    'Produces power cores on a delay instead of every tick - both how often it procs and how many cores each proc is worth scale with level (1 core / 10 ticks at level 0, up to 10 cores / 1 tick maxed). A Buff facing it boosts its output like any other producer.',
 }
 
 const EVOLUTION_LABEL: Record<EvolutionType, string> = {
-  basicCrit: 'Crit Tower',
+  basicCrit: 'Crit Generator',
   basicSteady: 'Basic Steady Tower',
   buffStacker: 'Buff Stacker',
   buffAll: 'Buff All',
@@ -88,7 +95,6 @@ export interface PanelHandle {
     buildType: PlaceableType | null,
     selected: GridSelection | null,
     formatMode: NumberFormatMode,
-    showBuildDescriptions: boolean,
   ): void
 }
 
@@ -99,7 +105,6 @@ function buildButtonGroup(
   onSelectBuildType: (type: PlaceableType) => void,
   buttonByType: Map<PlaceableType, HTMLButtonElement>,
   nameByType: Map<PlaceableType, HTMLSpanElement>,
-  descByType: Map<PlaceableType, HTMLSpanElement>,
   costByType: Map<PlaceableType, HTMLSpanElement>,
 ): void {
   const groupHeading = document.createElement('h3')
@@ -124,22 +129,16 @@ function buildButtonGroup(
     swatch.className = `build-swatch cell-${type}`
     swatch.setAttribute('aria-hidden', 'true')
 
-    const info = document.createElement('span')
-    info.className = 'build-info'
     const name = document.createElement('span')
     name.className = 'build-name'
-    const desc = document.createElement('span')
-    desc.className = 'build-desc'
-    info.append(name, desc)
 
     const cost = document.createElement('span')
     cost.className = 'build-cost'
 
-    btn.append(swatch, info, cost)
+    btn.append(swatch, name, cost)
     buttons.appendChild(btn)
     buttonByType.set(type, btn)
     nameByType.set(type, name)
-    descByType.set(type, desc)
     costByType.set(type, cost)
   }
 
@@ -147,25 +146,35 @@ function buildButtonGroup(
 }
 
 /**
- * The Build tab. Shows one of two mutually-exclusive views, never both at
- * once: the build-buttons picker when nothing's selected, or the selected
- * cell's detail/Upgrade/Remove/Evolve UI when something is. They used to
- * stack (build buttons always visible, detail block appended below), which
- * pushed the tab's content well past the grid's own height and looked
- * unfinished; a separate panel elsewhere was tried next, but that broke the
- * flow - eyes had to jump away from where the build buttons already were.
- * Swapping in place keeps everything in the one spot the player's already
- * looking at.
+ * The Build tab (always the picker, nothing else) plus the selected cell's
+ * own detail/Upgrade/Remove/Evolve UI, which lives in its OWN rail tab now -
+ * main.ts adds/shows a dedicated "selected cell" icon on the rail the
+ * moment something's selected (see tabShellHandle.setTabIcon/setTabHidden),
+ * and this renders into that tab's own content area, not the Build tab's.
+ *
+ * This is the THIRD layout for this view in one session: it started as
+ * in-place swapping over the Build picker (confusing - "reads as if a
+ * completely different tab had opened"), became a small centered modal
+ * (which then broke rotating a Buff's facing - the modal's full-viewport
+ * backdrop, even fully transparent, still intercepted the SECOND click on
+ * the grid cell meant to rotate it, before it could ever reach the cell),
+ * and is now its own rail tab - the user's own proposal, and simpler than
+ * either of the first two: no overlay, no backdrop-click wiring, no
+ * z-index/click-interception concerns, and the Build picker never has to
+ * hide for it either.
  */
 export function createPanel(
-  container: HTMLElement,
+  buildContainer: HTMLElement,
+  detailContainer: HTMLElement,
   onSelectBuildType: (type: PlaceableType) => void,
-  onUpgrade: () => void,
+  onUpgrade: (count: number) => void,
   onRemove: () => void,
   onEvolve: (evolutionType: EvolutionType) => void,
 ): PanelHandle {
-  container.innerHTML = ''
-  container.classList.add('build-tab')
+  buildContainer.innerHTML = ''
+  buildContainer.classList.add('build-tab')
+  detailContainer.innerHTML = ''
+  detailContainer.classList.add('panel-section')
 
   const buildSection = document.createElement('div')
   buildSection.className = 'panel-section'
@@ -174,32 +183,74 @@ export function createPanel(
 
   const buttonByType = new Map<PlaceableType, HTMLButtonElement>()
   const nameByType = new Map<PlaceableType, HTMLSpanElement>()
-  const descByType = new Map<PlaceableType, HTMLSpanElement>()
   const costByType = new Map<PlaceableType, HTMLSpanElement>()
   buildSection.appendChild(buildHeading)
-  buildButtonGroup(buildSection, 'Generators', GENERATOR_TYPES, onSelectBuildType, buttonByType, nameByType, descByType, costByType)
-  buildButtonGroup(buildSection, 'Buffers', BUFFER_TYPES, onSelectBuildType, buttonByType, nameByType, descByType, costByType)
+  buildButtonGroup(buildSection, 'Generators', GENERATOR_TYPES, onSelectBuildType, buttonByType, nameByType, costByType)
+  buildButtonGroup(buildSection, 'Buffers', BUFFER_TYPES, onSelectBuildType, buttonByType, nameByType, costByType)
 
-  const hint = document.createElement('p')
-  hint.className = 'panel-hint'
-  hint.textContent =
-    'Click an empty cell to place the selected type. Click a filled cell to inspect it, or click it again to deselect - ' +
-    'click a Buff or Buff Stacker again to rotate what it targets instead. ' +
-    'Right-click, or click anywhere off the grid, deselects both the build type and the inspected cell.'
+  // The "how to use this" hint used to live here as a paragraph under the
+  // build buttons - moved into the Help menu (see helpPanel.ts's Controls
+  // section) along with every other piece of instructional text in the game.
+  buildContainer.append(buildSection)
 
-  const detailSection = document.createElement('div')
-  detailSection.className = 'panel-section'
-  detailSection.hidden = true
   const detailName = document.createElement('h2')
-  const detailDesc = document.createElement('p')
-  detailDesc.className = 'panel-type-desc'
+
+  // update()'s own args, cached so the bulk-quantity toolbar below can
+  // re-render immediately on click instead of waiting for the next
+  // ~16ms animation-frame tick (main.ts's render() loop would pick the
+  // change up on its own regardless, this is just snappier - same pattern
+  // upgradesPanel.ts/powerCoreUpgradesPanel.ts already use for their own
+  // toolbars).
+  let latestUpdateArgs: Parameters<typeof update> | null = null
+
+  // Bulk-quantity toolbar for the Upgrade button (1x/5x/10x/Max) - a much
+  // smaller quantity set than the Upgrades/Power Cores tabs' own toolbar
+  // (1x/10x/25x/Max), since a single cell's level range tops out at 10, not
+  // in the hundreds of thousands. Hidden whenever the Upgrade button itself
+  // has nothing to buy (evolved/maxed - see update() below).
+  type UpgradeBuyCount = 1 | 5 | 10 | 'max'
+  const UPGRADE_BUY_COUNTS: UpgradeBuyCount[] = [1, 5, 10, 'max']
+  let selectedUpgradeCount: UpgradeBuyCount = 1
+  const upgradeToolbar = document.createElement('div')
+  upgradeToolbar.className = 'upgrade-toolbar cell-upgrade-toolbar'
+  const upgradeToolbarButtons = new Map<UpgradeBuyCount, HTMLButtonElement>()
+  for (const count of UPGRADE_BUY_COUNTS) {
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'upgrade-toolbar-button'
+    btn.textContent = count === 'max' ? 'Max' : `x${count}`
+    btn.addEventListener('click', () => {
+      selectedUpgradeCount = count
+      for (const [c, b] of upgradeToolbarButtons) b.classList.toggle('upgrade-toolbar-button-active', c === count)
+      if (latestUpdateArgs) update(...latestUpdateArgs)
+    })
+    upgradeToolbar.appendChild(btn)
+    upgradeToolbarButtons.set(count, btn)
+  }
+  upgradeToolbarButtons.get(1)!.classList.add('upgrade-toolbar-button-active')
+
+  /** How many levels an Upgrade click would actually buy right now, given the toolbar's selected quantity - mirrors upgradesPanel.ts's resolveBuyCount. Shared by the display (update) and the click handler below, so they can never disagree. */
+  function resolveUpgradeCount(state: GameState, x: number, y: number): number {
+    const cell = state.cells[cellIndex(x, y, state.width)]
+    if (cell.type === 'empty') return 0
+    const max = MAX_LEVEL[cell.type]
+    if (cell.level >= max) return 0
+    if (selectedUpgradeCount === 'max') return cellMaxAffordableUpgradeCount(state, x, y)
+    return Math.min(selectedUpgradeCount, max - cell.level)
+  }
 
   const detailActions = document.createElement('div')
   detailActions.className = 'detail-actions'
   const upgradeButton = document.createElement('button')
   upgradeButton.type = 'button'
   upgradeButton.className = 'upgrade-button'
-  upgradeButton.addEventListener('click', onUpgrade)
+  upgradeButton.addEventListener('click', () => {
+    if (!latestUpdateArgs) return
+    const [state, , , , selected] = latestUpdateArgs
+    if (!selected) return
+    const count = resolveUpgradeCount(state, selected.x, selected.y)
+    if (count > 0) onUpgrade(count)
+  })
   const removeButton = document.createElement('button')
   removeButton.type = 'button'
   removeButton.className = 'remove-button'
@@ -230,9 +281,7 @@ export function createPanel(
   const detailBody = document.createElement('div')
   detailBody.className = 'panel-detail'
 
-  detailSection.append(detailName, detailDesc, detailActions, evolveSection, statsHeading, detailBody)
-
-  container.append(buildSection, hint, detailSection)
+  detailContainer.append(detailName, upgradeToolbar, detailActions, evolveSection, statsHeading, detailBody)
 
   function update(
     state: GameState,
@@ -241,44 +290,62 @@ export function createPanel(
     buildType: PlaceableType | null,
     selected: GridSelection | null,
     formatMode: NumberFormatMode,
-    showBuildDescriptions: boolean,
   ): void {
-    // Selecting a cell replaces the build picker entirely rather than
-    // stacking below it - see the function-level comment above.
+    latestUpdateArgs = [state, displayNoCrit, displayWithCrit, buildType, selected, formatMode]
+    // The build picker is always visible now (its own rail tab); the
+    // selected cell's own detail lives in a separate rail tab entirely -
+    // see the function-level comment above. showingDetail just guards
+    // whether there's anything valid to render into detailContainer this
+    // call; main.ts owns whether that tab is actually visible/active.
     const showingDetail = selected !== null && state.cells[cellIndex(selected.x, selected.y, state.width)].type !== 'empty'
-    buildSection.hidden = showingDetail
-    hint.hidden = showingDetail
-    detailSection.hidden = !showingDetail
 
-    if (!showingDetail) {
-      for (const [type, btn] of buttonByType) {
-        const buildable = isBuildable(state, type)
-        btn.hidden = type === 'powerCoreGenerator' && !buildable
-        const discovered = !!state.discoveredTypes[type]
-        const cost = type === 'powerCoreGenerator' ? null : placementCost(state, type)
-        const affordable = canAffordPlacement(state, type)
-        nameByType.get(type)!.textContent = discovered ? TYPE_LABEL[type] : '???'
-        // The description is either shown inline (the row) or, if the user
-        // turned that off in Settings ("super long" per their own words),
-        // moved into the hover tooltip instead - never fully lost, just
-        // relocated. Undiscovered types show neither, in either mode.
-        const showInline = discovered && showBuildDescriptions
-        const descEl = descByType.get(type)!
-        descEl.textContent = showInline ? TYPE_DESCRIPTION[type] : ''
-        descEl.hidden = !showInline
-        costByType.get(type)!.textContent = type === 'powerCoreGenerator' ? 'Free' : format(cost!, formatMode)
-        btn.classList.toggle('build-button-active', type === buildType)
-        btn.disabled = !affordable
-        if (!discovered) {
-          btn.title = 'Discovered once you can afford one.'
-        } else {
-          const currencyLabel = currencyFor(type) === 'powerCores' ? 'power cores' : 'energy'
-          const affordNote = affordable ? '' : `Not enough ${currencyLabel}`
-          btn.title = showBuildDescriptions ? affordNote : [TYPE_DESCRIPTION[type], affordNote].filter(Boolean).join(' - ')
-        }
+    for (const [type, btn] of buttonByType) {
+      const nameEl = nameByType.get(type)!
+      const costEl = costByType.get(type)!
+      btn.classList.toggle('build-button-active', type === buildType)
+
+      // The Power Core Generator is never hidden from the list, even when
+      // it currently can't be placed - it stays visible with "Locked" (no
+      // Power Generator Count level bought at all yet - name stays hidden,
+      // matching the Power Cores tab's own "Locked" slot-upgrade treatment)
+      // or "Max" (a level IS bought, but every generator it currently
+      // allows is already on the board - buying another Power Generator
+      // Count level raises the cap again).
+      if (type === 'powerCoreGenerator' && powerCoreGeneratorCap(state) === 0) {
+        nameEl.textContent = 'Locked'
+        costEl.textContent = ''
+        btn.disabled = true
+        btn.title = 'Buy a level of Power Generator Count in the Upgrades tab to unlock this.'
+        continue
       }
-      return
+      if (type === 'powerCoreGenerator' && !isBuildable(state, type)) {
+        const discovered = !!state.discoveredTypes[type]
+        nameEl.textContent = discovered ? TYPE_LABEL[type] : '???'
+        costEl.textContent = 'Max'
+        btn.disabled = true
+        btn.title = discovered
+          ? 'At your current Power Generator Count cap - buy another level in the Upgrades tab to allow more.'
+          : 'Discovered once you can afford one.'
+        continue
+      }
+
+      const discovered = !!state.discoveredTypes[type]
+      // Placement is always Energy-priced now, every PlaceableType alike
+      // (including the Power Core Generator, which used to be free here -
+      // reverted per the user).
+      const cost = placementCost(state, type)
+      const affordable = canAffordPlacement(state, type)
+      nameEl.textContent = discovered ? TYPE_LABEL[type] : '???'
+      costEl.textContent = format(cost, formatMode)
+      btn.disabled = !affordable
+      if (!discovered) {
+        btn.title = 'Discovered once you can afford one.'
+      } else {
+        btn.title = affordable ? '' : 'Not enough energy'
+      }
     }
+
+    if (!showingDetail) return
 
     // selected is non-null and non-empty here (showingDetail guarantees both).
     const i = cellIndex(selected!.x, selected!.y, state.width)
@@ -288,9 +355,14 @@ export function createPanel(
     const maxed = isMaxLevel(cell.type, level)
 
     detailName.textContent = TYPE_LABEL[cell.type]
-    detailDesc.textContent = TYPE_DESCRIPTION[cell.type]
 
-    const rows: string[] = [`<div>Level: ${level} / ${MAX_LEVEL[cell.type]}</div>`]
+    // Evolved types (MAX_LEVEL 0) inherit whatever level their source cell
+    // had when they evolved (always that source type's own max - see
+    // economy.ts evolveCell) but never level any further themselves, so
+    // "Level: 9 / 0" read as broken rather than as "maxed". Show a plain
+    // "Max level reached" line instead for those.
+    const levelText = MAX_LEVEL[cell.type] === 0 ? 'Level: Max level reached (evolved)' : `Level: ${level} / ${MAX_LEVEL[cell.type]}`
+    const rows: string[] = [`<div>${levelText}</div>`]
     let nextLevelText = ''
     const buffMultipliers = resolveBuffMultipliers(state)
     const buffMult = buffMultipliers[i]
@@ -302,8 +374,8 @@ export function createPanel(
       rows.push(`<div>Value (no crit): ${format(displayNoCrit.final[i], formatMode)}</div>`)
       const chance = critChanceFor(state, isCritTower)
       const amount = critAmountFor(state, isCritTower)
-      rows.push(`<div>Crit chance: ${(chance * 100).toFixed(1)}%${isCritTower ? ` (includes +${CRIT_TOWER_CHANCE_BONUS * 100}pp Crit Tower bonus)` : ''}</div>`)
-      rows.push(`<div>Crit amount: ${amount.toFixed(2)}x${isCritTower ? ` (includes x${CRIT_TOWER_AMOUNT_MULT} Crit Tower bonus)` : ''}</div>`)
+      rows.push(`<div>Crit chance: ${(chance * 100).toFixed(1)}%${isCritTower ? ` (includes +${CRIT_TOWER_CHANCE_BONUS * 100}pp Crit Generator bonus)` : ''}</div>`)
+      rows.push(`<div>Crit amount: ${amount.toFixed(2)}x${isCritTower ? ` (includes x${CRIT_TOWER_AMOUNT_MULT} Crit Generator bonus)` : ''}</div>`)
       rows.push(`<div>Base (with crit, expected): ${format(displayWithCrit.base[i], formatMode)}</div>`)
       rows.push(`<div>Value (with crit, expected): ${format(displayWithCrit.final[i], formatMode)}</div>`)
       rows.push(`<div>Own output multiplier: ${ownMult.toLocaleString()}x${cell.type === 'basicSteady' ? ` (${BASIC_MULT[level]}x level × ${STEADY_TOWER_MULT}x Basic Steady)` : ' (level only - a nearby Leech steals a share of the output this produces too)'}</div>`)
@@ -354,14 +426,16 @@ export function createPanel(
     } else {
       // powerCoreGenerator - production is discrete (a proc every `period`
       // ticks, not a per-tick trickle), so the detail shows ticks-until-next
-      // instead of a per-tick rate.
+      // instead of a per-tick rate. Both period and amount scale with level.
       const period = powerCoreGeneratorPeriod(level)
+      const amount = powerCoreGeneratorAmount(level)
       const ticksLeft = period - cell.coreProgress
       rows.push(`<div>Ticks until next core: ${ticksLeft} / ${period}</div>`)
-      rows.push(`<div>Cores per proc: 1${buffMult !== 1 ? ` × ${buffMult.toFixed(3)} (Buff) = ${buffMult.toFixed(3)}` : ''}</div>`)
+      rows.push(`<div>Cores per proc: ${amount}${buffMult !== 1 ? ` × ${buffMult.toFixed(3)} (Buff) = ${(amount * buffMult).toFixed(3)}` : ''}</div>`)
       if (!maxed) {
         const nextPeriod = powerCoreGeneratorPeriod(level + 1)
-        nextLevelText = `Next level: ${period} ticks/core → ${nextPeriod} ticks/core`
+        const nextAmount = powerCoreGeneratorAmount(level + 1)
+        nextLevelText = `Next level: ${amount} core${amount === 1 ? '' : 's'} / ${period} ticks → ${nextAmount} core${nextAmount === 1 ? '' : 's'} / ${nextPeriod} ticks`
       }
     }
 
@@ -372,15 +446,28 @@ export function createPanel(
       // The 4 evolved types never level further (deferred to a future
       // prestige system) - the Upgrade button reflects that instead of
       // showing a cost that can never be paid.
+      upgradeToolbar.hidden = true
       upgradeButton.disabled = true
       upgradeButton.textContent = 'Evolved - no further leveling'
     } else if (maxed) {
+      upgradeToolbar.hidden = true
       upgradeButton.disabled = true
       upgradeButton.textContent = 'Max level'
     } else {
-      const cost = upgradeCost(cell.type as PlaceableType, level)
-      upgradeButton.disabled = !canUpgrade(state, selected!.x, selected!.y)
-      upgradeButton.textContent = `Upgrade (${format(cost, formatMode)})`
+      upgradeToolbar.hidden = false
+      const icon = RESOURCE_ICON[currencyFor(cell.type as PlaceableType)]
+      const count = resolveUpgradeCount(state, selected!.x, selected!.y)
+      if (count <= 0) {
+        // Only reachable in 'max' mode - a fixed quantity always resolves to
+        // at least 1 level while not maxed, affordable or not.
+        upgradeButton.disabled = true
+        upgradeButton.textContent = 'Upgrade (not enough)'
+      } else {
+        const cost = cellBulkUpgradeCost(cell.type as PlaceableType, level, count)
+        const balance = currencyFor(cell.type as PlaceableType) === 'energy' ? state.currency : state.powerCores
+        upgradeButton.disabled = balance.lt(cost)
+        upgradeButton.textContent = `Upgrade x${count} (${icon} ${format(cost, formatMode)})`
+      }
     }
 
     // Always available regardless of level - refunds a fraction of what was
@@ -408,7 +495,7 @@ export function createPanel(
         } else {
           const cost = evolutionConversionCost(state, evolutionType)
           btn.disabled = !canEvolve(state, selected!.x, selected!.y, evolutionType)
-          btn.textContent = `Evolve into ${EVOLUTION_LABEL[evolutionType]} (${format(cost, formatMode)} power cores, ${count} / ${cap} used)`
+          btn.textContent = `Evolve into ${EVOLUTION_LABEL[evolutionType]} (${RESOURCE_ICON.powerCores} ${format(cost, formatMode)}, ${count} / ${cap} used)`
         }
       }
     }

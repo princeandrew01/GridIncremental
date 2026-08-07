@@ -8,6 +8,8 @@ import {
   upgradeCost,
   upgradeCell,
   canUpgrade,
+  cellBulkUpgradeCost,
+  cellMaxAffordableUpgradeCount,
   isMaxLevel,
   removeCell,
   removeRefund,
@@ -84,6 +86,85 @@ describe('economy', () => {
     expect(upgradeCell(state, 0, 0)).toBe(false)
   })
 
+  it('cellBulkUpgradeCost matches a brute-force per-level sum, and upgradeCell(state, x, y, count) buys that many levels at once, all-or-nothing', () => {
+    const state = makeGameState(8, 8)
+    state.currency = new Decimal(1_000_000)
+    placeCell(state, 0, 0, 'basic') // max level 10
+
+    let bruteForce = new Decimal(0)
+    for (let l = 0; l < 5; l++) bruteForce = bruteForce.plus(upgradeCost('basic', l))
+    const bulk = cellBulkUpgradeCost('basic', 0, 5)
+    expect(bulk.toNumber()).toBeCloseTo(bruteForce.toNumber(), 6)
+
+    const before = state.currency
+    expect(upgradeCell(state, 0, 0, 5)).toBe(true)
+    expect(state.cells[cellIndex(0, 0, 8)].level).toBe(5)
+    expect(state.currency.toString()).toBe(before.minus(bulk).toString())
+  })
+
+  it('upgradeCell(state, x, y, count) refuses to overshoot the max level, or to partially buy what it can\'t fully afford', () => {
+    const state = makeGameState(8, 8)
+    state.currency = new Decimal(1_000_000)
+    placeCell(state, 0, 0, 'leech') // max level 2
+
+    expect(upgradeCell(state, 0, 0, 3)).toBe(false) // only 2 levels exist
+    expect(state.cells[cellIndex(0, 0, 8)].level).toBe(0)
+
+    state.currency = new Decimal(1) // nowhere near enough for even 1 level
+    expect(upgradeCell(state, 0, 0, 2)).toBe(false)
+    expect(state.cells[cellIndex(0, 0, 8)].level).toBe(0) // unchanged, not a partial buy
+  })
+
+  it('cellMaxAffordableUpgradeCount returns the largest count actually affordable, capped at the type\'s max level', () => {
+    const state = makeGameState(8, 8)
+    state.currency = new Decimal(BASE_COST.basic) // just enough to place it
+    placeCell(state, 0, 0, 'basic')
+    state.currency = cellBulkUpgradeCost('basic', 0, 4).plus(1) // enough for 4 levels, not 5
+    const n = cellMaxAffordableUpgradeCount(state, 0, 0)
+    expect(n).toBe(4)
+    expect(cellBulkUpgradeCost('basic', 0, n).lte(state.currency)).toBe(true)
+    expect(cellBulkUpgradeCost('basic', 0, n + 1).gt(state.currency)).toBe(true)
+
+    // Capped at the max level however much currency is available.
+    state.currency = new Decimal(1e30)
+    expect(cellMaxAffordableUpgradeCount(state, 0, 0)).toBe(MAX_LEVEL.basic)
+
+    // 0 with no currency, and 0 once already maxed.
+    const maxed = makeGameState(8, 8)
+    maxed.currency = new Decimal(BASE_COST.leech)
+    placeCell(maxed, 0, 0, 'leech')
+    maxed.currency = new Decimal(0)
+    expect(cellMaxAffordableUpgradeCount(maxed, 0, 0)).toBe(0)
+    for (let i = 0; i < MAX_LEVEL.leech; i++) {
+      maxed.currency = new Decimal(1e30)
+      upgradeCell(maxed, 0, 0)
+    }
+    expect(cellMaxAffordableUpgradeCount(maxed, 0, 0)).toBe(0)
+  })
+
+  it('bulk-buying N levels at once counts as N lifetime level-ups (totalUpgrades), same as buying them one at a time would', () => {
+    const state = makeGameState(8, 8)
+    state.currency = new Decimal(1_000_000)
+    placeCell(state, 0, 0, 'basic')
+    upgradeCell(state, 0, 0, 4)
+    expect(state.totalUpgrades).toBe(4)
+  })
+
+  it('cellBulkUpgradeCost is Power-Core-priced for the Power Core Generator, using its own separate level-up curve - leveling never touches Energy', () => {
+    const state = makeGameState(8, 8)
+    state.currency = new Decimal(1e9)
+    buyUpgrade(state, 'powerGeneratorCount', 1)
+    placeCell(state, 0, 0, 'powerCoreGenerator')
+    state.powerCores = new Decimal(1e9)
+    const currencyAfterPlacement = state.currency
+
+    const bulk = cellBulkUpgradeCost('powerCoreGenerator', 0, 3)
+    expect(upgradeCell(state, 0, 0, 3)).toBe(true)
+    expect(state.cells[cellIndex(0, 0, 8)].level).toBe(3)
+    expect(state.powerCores.toString()).toBe(new Decimal(1e9).minus(bulk).toString())
+    expect(state.currency.toString()).toBe(currencyAfterPlacement.toString()) // leveling is Power Cores only
+  })
+
   it('an evolved cell (basicCrit/basicSteady/buffStacker/buffAll) is always reported as maxed - no further leveling', () => {
     for (const type of ['basicCrit', 'basicSteady', 'buffStacker', 'buffAll'] as const) {
       expect(MAX_LEVEL[type]).toBe(0)
@@ -99,25 +180,32 @@ describe('economy', () => {
     expect(currencyFor('powerCoreGenerator')).toBe('powerCores')
   })
 
-  it('the Power Core Generator is free to place once a slot is available (Power Generator Count already paid for it) - only its own per-cell leveling costs Power Cores, and removing it refunds nothing (nothing was spent at placement)', () => {
+  it('placing a Power Core Generator costs real Energy (5,000,000 for the first, x10 per additional one already on the board) even once a slot is available - Power Generator Count only raises the cap, it no longer pays for any of them', () => {
     const state = makeGameState(8, 8)
     state.currency = new Decimal(1e9)
     state.powerCores = new Decimal(1e6)
-    buyUpgrade(state, 'powerGeneratorCount', 1) // unlocks + grants 1 slot, Energy-priced
-
-    expect(placeCell(state, 0, 0, 'powerCoreGenerator')).toBe(true)
-    expect(state.powerCores.toString()).toBe(new Decimal(1e6).toString()) // untouched - placement is free
+    buyUpgrade(state, 'powerGeneratorCount', 1) // raises the cap to 1, Energy-priced - separate from placement
     const currencyAfterUnlock = state.currency
+
+    expect(placementCost(state, 'powerCoreGenerator').toString()).toBe(new Decimal(5_000_000).toString())
+    expect(placeCell(state, 0, 0, 'powerCoreGenerator')).toBe(true)
+    expect(state.powerCores.toString()).toBe(new Decimal(1e6).toString()) // untouched - placement is Energy, not Power Cores
+    expect(state.currency.toString()).toBe(currencyAfterUnlock.minus(5_000_000).toString())
+    const currencyAfterPlace = state.currency
+
+    // A second one (still within cap only if bought again - here just checking the cost curve) would be x10 more.
+    expect(placementCost(state, 'powerCoreGenerator').toString()).toBe(new Decimal(50_000_000).toString())
 
     expect(upgradeCell(state, 0, 0)).toBe(true)
     expect(state.cells[cellIndex(0, 0, 8)].level).toBe(1)
-    expect(state.currency.toString()).toBe(currencyAfterUnlock.toString()) // leveling doesn't touch Energy
+    expect(state.currency.toString()).toBe(currencyAfterPlace.toString()) // leveling doesn't touch Energy
     expect(state.powerCores.lt(1e6)).toBe(true) // leveling spent Power Cores
 
     const powerCoresBeforeRemove = state.powerCores
+    const currencyBeforeRemove = state.currency
     expect(removeCell(state, 0, 0)).toBe(true)
-    expect(state.powerCores.toString()).toBe(powerCoresBeforeRemove.toString()) // no refund - placementCost was 0
-    expect(state.currency.toString()).toBe(currencyAfterUnlock.toString())
+    expect(state.powerCores.toString()).toBe(powerCoresBeforeRemove.toString()) // still no Power Core refund - leveling was never refundable
+    expect(state.currency.gt(currencyBeforeRemove)).toBe(true) // but it DOES refund a fraction of Energy now - real placementCost was spent
   })
 
   it('placing a Power Core Generator fails with no slot available, even with abundant power cores - and is capped once slots run out', () => {
@@ -288,9 +376,9 @@ describe('evolution', () => {
 
     expect(evolveCell(state, 0, 0, 'basicCrit')).toBe(true)
     expect(evolutionSlotCap(state, 'basicCrit')).toBe(1)
-    expect(canEvolve(state, 1, 0, 'basicCrit')).toBe(false) // Crit Tower slot already used
+    expect(canEvolve(state, 1, 0, 'basicCrit')).toBe(false) // Crit Generator slot already used
 
-    // Basic Steady's own cap is untouched by Crit Tower's usage - independent.
+    // Basic Steady's own cap is untouched by Crit Generator's usage - independent.
     expect(canEvolve(state, 1, 0, 'basicSteady')).toBe(true)
     expect(evolveCell(state, 1, 0, 'basicSteady')).toBe(true)
   })

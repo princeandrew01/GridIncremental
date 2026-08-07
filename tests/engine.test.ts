@@ -11,8 +11,10 @@ import {
   rollCrits,
   expectedCritMultipliers,
   powerCoreGeneratorPeriod,
+  powerCoreGeneratorAmount,
   firePowerCoreGenerators,
   resolveBuffMultipliers,
+  expectedPowerCoreProductionPerTick,
 } from '../src/game/engine'
 import { critChanceFor, critAmountFor } from '../src/game/upgrades'
 import { BASIC_MULT, STEADY_TOWER_MULT, BUFF_PCT_PER_LEVEL, CRIT_TOWER_CHANCE_BONUS, CRIT_TOWER_AMOUNT_MULT } from '../src/game/config'
@@ -198,7 +200,7 @@ describe('engine', () => {
     expect(critResult.production.toNumber()).toBeCloseTo(critAmountFor(critState, false), 9)
   })
 
-  it('9. Crit Tower (basicCrit): +CRIT_TOWER_CHANCE_BONUS additive to chance, xCRIT_TOWER_AMOUNT_MULT multiplicative on amount', () => {
+  it('9. Crit Generator (basicCrit): +CRIT_TOWER_CHANCE_BONUS additive to chance, xCRIT_TOWER_AMOUNT_MULT multiplicative on amount', () => {
     const state = makeGameState(1, 1)
     const plainChance = critChanceFor(state, false)
     const plainAmount = critAmountFor(state, false)
@@ -399,24 +401,37 @@ describe('engine', () => {
     expect(result.finalPowerCores[cellIndex(3, 0, 4)].toNumber()).toBeCloseTo(5 * 1.5, 9) // the whole-board Leech steals the buffed (real) amount, not the raw proc
   })
 
-  it('25. powerCoreGeneratorPeriod: 5 ticks at level 0, down to 1 at level 4', () => {
-    expect(powerCoreGeneratorPeriod(0)).toBe(5)
-    expect(powerCoreGeneratorPeriod(1)).toBe(4)
-    expect(powerCoreGeneratorPeriod(4)).toBe(1)
+  it('25. powerCoreGeneratorPeriod/powerCoreGeneratorAmount: 1 core / 10 ticks at level 0, up to 10 cores / 1 tick at level 9 (both scale with level, the user\'s own redesign)', () => {
+    expect(powerCoreGeneratorPeriod(0)).toBe(10)
+    expect(powerCoreGeneratorPeriod(1)).toBe(9)
+    expect(powerCoreGeneratorPeriod(9)).toBe(1)
+    expect(powerCoreGeneratorAmount(0)).toBe(1)
+    expect(powerCoreGeneratorAmount(1)).toBe(2)
+    expect(powerCoreGeneratorAmount(9)).toBe(10)
   })
 
-  it('26. firePowerCoreGenerators produces nothing until the period elapses, then wraps coreProgress - always exactly 1 core per proc', () => {
+  it('26. firePowerCoreGenerators produces nothing until the period elapses, then wraps coreProgress - worth powerCoreGeneratorAmount(level) cores per proc', () => {
     const state = makeGameState(2, 1)
-    place(state, 0, 0, 'powerCoreGenerator', 0) // period 5
+    place(state, 0, 0, 'powerCoreGenerator', 0) // period 10, amount 1
     const idx = cellIndex(0, 0, 2)
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 9; i++) {
       const amounts = firePowerCoreGenerators(state)
       expect(amounts[idx].toNumber()).toBe(0)
     }
-    expect(state.cells[idx].coreProgress).toBe(4)
-    const amounts = firePowerCoreGenerators(state) // 5th call crosses the boundary
+    expect(state.cells[idx].coreProgress).toBe(9)
+    const amounts = firePowerCoreGenerators(state) // 10th call crosses the boundary
     expect(amounts[idx].toNumber()).toBe(1)
     expect(state.cells[idx].coreProgress).toBe(0) // wrapped
+  })
+
+  it('26b. firePowerCoreGenerators at a higher level produces more than 1 core per proc', () => {
+    const state = makeGameState(2, 1)
+    place(state, 0, 0, 'powerCoreGenerator', 3) // period 7, amount 4
+    const idx = cellIndex(0, 0, 2)
+    for (let i = 0; i < 6; i++) {
+      expect(firePowerCoreGenerators(state)[idx].toNumber()).toBe(0)
+    }
+    expect(firePowerCoreGenerators(state)[idx].toNumber()).toBe(4) // 7th call crosses the boundary
   })
 
   it('27. a forced generator proc is visible to a nearby Leech (steals power cores, mirroring how energy is stolen from a Basic)', () => {
@@ -452,5 +467,29 @@ describe('engine', () => {
     place(state, 1, 0, 'leech', 0)
     const result = tick(state, ALWAYS_CRIT)
     expect(result.powerCoreProduction.toNumber()).toBe(0)
+  })
+
+  it('30. expectedPowerCoreProductionPerTick: a single level-0 generator (1 core / 10 ticks) averages 1/10 core/tick, matching a 10-tick brute-force simulation', () => {
+    const state = makeGameState(2, 1)
+    place(state, 0, 0, 'powerCoreGenerator', 0) // period 10, amount 1
+    expect(expectedPowerCoreProductionPerTick(state).toNumber()).toBeCloseTo(1 / 10, 9)
+
+    // Brute-force: exactly 1 core over 10 real ticks -> the same 1/10 average.
+    let total = new Decimal(0)
+    for (let i = 0; i < 10; i++) total = total.plus(tick(state).powerCoreProduction)
+    expect(total.toNumber()).toBe(1)
+  })
+
+  it('30b. expectedPowerCoreProductionPerTick includes Leech-stealing and Buff multipliers, same as a real tick', () => {
+    const state = makeGameState(3, 1)
+    place(state, 0, 0, 'powerCoreGenerator', 9, 'left') // period 1, amount 10 -> 10 cores/tick, unbuffed
+    place(state, 1, 0, 'buff', 4, 'left') // 50%, facing the generator
+    place(state, 2, 0, 'leech', 2) // whole board - the generator is 2 cells away, out of orthogonal/Moore range
+
+    const expected = expectedPowerCoreProductionPerTick(state)
+    // Generator's own boosted output (10 * 1.5) counted once via its own
+    // final, plus the Leech's steal of that same boosted output - matches
+    // the established "stealing doesn't remove from the source" behaviour.
+    expect(expected.toNumber()).toBeCloseTo(10 * 1.5 * 2, 9)
   })
 })

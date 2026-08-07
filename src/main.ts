@@ -11,8 +11,10 @@ import { computeOfflineTicks, applyOfflineProgress } from './game/offline'
 import { format } from './game/format'
 import { loadSettings, saveSettings, applyTheme, type Settings } from './game/settings'
 import { updateHighestValues, checkAchievements } from './game/stats'
-import { createGrid, type GridHandle, type GridSelection } from './ui/grid'
+import { createGrid, type GridHandle, type GridSelection, TYPE_LABEL, TYPE_ICON } from './ui/grid'
 import { createAppHeader } from './ui/appHeader'
+import { createDevLogPanel } from './ui/devLogPanel'
+import { createHelpPanel } from './ui/helpPanel'
 import { createCurrencyHeader } from './ui/currencyHeader'
 import { createTabShell } from './ui/tabShell'
 import { createPanel } from './ui/panel'
@@ -48,61 +50,100 @@ const app = document.querySelector<HTMLDivElement>('#app')!
 app.innerHTML = ''
 app.classList.add('app')
 
+// --- Top bar: title (left) + Dev Log/Help/Settings icon toggles (right,
+// via appHeaderHandle.iconGroup). ---
 const appHeaderContainer = document.createElement('div')
 app.appendChild(appHeaderContainer)
-createAppHeader(appHeaderContainer)
+const appHeaderHandle = createAppHeader(appHeaderContainer)
 
+const devLogContainer = document.createElement('div')
+appHeaderHandle.iconGroup.appendChild(devLogContainer)
+createDevLogPanel(devLogContainer)
+
+const helpContainer = document.createElement('div')
+appHeaderHandle.iconGroup.appendChild(helpContainer)
+createHelpPanel(helpContainer)
+
+const settingsContainer = document.createElement('div')
+appHeaderHandle.iconGroup.appendChild(settingsContainer)
+
+// --- Resources row: Energy + Power Cores, each with an expected rate
+// underneath - its own full-width row now, no longer nested inside the
+// right zone's bordered box (see style.css .resources-row). ---
+const resourcesContainer = document.createElement('div')
+app.appendChild(resourcesContainer)
+const currencyHeaderHandle = createCurrencyHeader(resourcesContainer)
+
+// --- Grid (left) + right zone (icon rail + the open panel's content, see
+// ui/tabShell.ts). The right zone's bordered box now wraps just the rail +
+// content - currency/settings used to live in a header row inside it, both
+// moved up to the rows above. ---
 const gridContainer = document.createElement('div')
 const panelContainer = document.createElement('div')
 app.append(gridContainer, panelContainer)
 panelContainer.classList.add('panel')
 
-// panelContainer's fixed internal layout: a bordered box (matching the debug
-// panel's own dashed-border treatment) holding a header row (currency/
-// production on the left, the settings gear inline on the right - always
-// visible) -> tab strip -> active tab's content. Save controls live inside
-// the settings popover (see below), reachable from the same gear icon.
 const boundedShell = document.createElement('div')
 boundedShell.className = 'panel-bordered'
-const headerRow = document.createElement('div')
-headerRow.className = 'panel-header-row'
-const currencyHeaderContainer = document.createElement('div')
-const settingsContainer = document.createElement('div')
-headerRow.append(currencyHeaderContainer, settingsContainer)
-
 const tabShellContainer = document.createElement('div')
-boundedShell.append(headerRow, tabShellContainer)
+boundedShell.append(tabShellContainer)
 panelContainer.append(boundedShell)
-
-const currencyHeaderHandle = createCurrencyHeader(currencyHeaderContainer)
 
 const tabShellHandle = createTabShell(
   tabShellContainer,
   [
-    { id: 'build', label: 'Build' },
-    { id: 'upgrades', label: 'Upgrades' },
-    { id: 'powerCores', label: 'Power Cores' },
-    { id: 'prestige', label: 'Prestige' },
-    { id: 'achievements', label: 'Achievements' },
-    { id: 'stats', label: 'Stats' },
+    { id: 'build', label: 'Build', icon: '🔨' },
+    { id: 'upgrades', label: 'Energy', icon: '⚡' },
+    { id: 'powerCores', label: 'Power Cores', icon: '🔵' },
+    { id: 'prestige', label: 'Prestige', icon: '⭐' },
+    { id: 'achievements', label: 'Achievements', icon: '🏆' },
+    { id: 'stats', label: 'Stats', icon: '📊' },
+    // Last in the rail (bottom, since .tab-strip stacks top-to-bottom in
+    // DOM order) - hidden until something's selected, see
+    // syncCellDetailTab() below, which also sets its real icon/label to
+    // match whatever's selected.
+    { id: 'cellDetail', label: 'Selected', icon: '🔍' },
   ],
   (id) => {
-    // Bug fix: switching to any tab other than Build deselects whatever's
-    // selected on the grid and disarms any build type - both are
-    // Build-tab-specific concepts that would otherwise sit stale/hidden on
-    // a different tab. Also fires on the initial construction-time
-    // activation (always 'build', the default tab) and on
-    // handleCellClick's own programmatic switch *to* 'build' below - both
-    // are no-ops here since neither ever needs anything cleared.
-    if (id !== 'build' && (buildType !== null || selected !== null)) {
+    // Each of buildType/selected only makes sense on its own one tab
+    // (buildType: 'build', selected: 'cellDetail') - never both non-null at
+    // once (arming a build type clears any selection and vice versa) - so
+    // navigating to any OTHER tab clears whichever one applies. Clicking
+    // 'build' while a cell is selected still deselects the cell (per the
+    // user: "when you click another menu item, automatically deselect the
+    // generator") - but clicking 'build' does NOT clear buildType itself,
+    // so re-clicking the tab you're already placing from doesn't cancel
+    // your own armed selection. Also fires on the initial construction-time
+    // activation (always 'build') and on handleCellClick's own programmatic
+    // switch *to* 'cellDetail' below - both no-ops, neither ever clears
+    // anything relevant to itself.
+    let changed = false
+    if (id !== 'build' && buildType !== null) {
       buildType = null
-      selected = null
-      render()
+      changed = true
     }
+    if (id !== 'cellDetail' && selected !== null) {
+      selected = null
+      changed = true
+    }
+    if (changed) render()
   },
 )
+tabShellHandle.setTabHidden('cellDetail', true)
+
+// Shows/hides the "selected cell" rail tab and keeps its icon/label in sync
+// with whatever's actually selected - called every render() (cheap, and
+// selection can change from several different code paths, so this is
+// simpler than threading an explicit sync call through each of them).
+function syncCellDetailTab(): void {
+  const cell = selected ? state.cells[cellIndex(selected.x, selected.y, state.width)] : null
+  const hasDetail = cell !== null && cell.type !== 'empty'
+  tabShellHandle.setTabHidden('cellDetail', !hasDetail)
+  if (hasDetail) tabShellHandle.setTabIcon('cellDetail', TYPE_ICON[cell!.type], TYPE_LABEL[cell!.type])
+}
 
 function render(): void {
+  syncCellDetailTab()
   const canPlaceCurrent = buildType !== null && canAffordPlacement(state, buildType)
   // Two stable (non-random) snapshots, recomputed fresh every render instead
   // of reused from the live per-tick `lastResult` - crit is a coin flip each
@@ -119,8 +160,8 @@ function render(): void {
   const displayWithCrit = recalculate(state, expectedCritMultipliers(state))
   updateDiscoveredTypes(state) // one-time "???" reveal per placeable type - cheap, same call-every-render pattern as the checks below
   gridHandle.update(state, lastResult, displayNoCrit, selected, canPlaceCurrent, settings.numberFormat)
-  currencyHeaderHandle.update(state, lastResult, settings.numberFormat)
-  panelHandle.update(state, displayNoCrit, displayWithCrit, buildType, selected, settings.numberFormat, settings.showBuildDescriptions)
+  currencyHeaderHandle.update(state, settings.numberFormat)
+  panelHandle.update(state, displayNoCrit, displayWithCrit, buildType, selected, settings.numberFormat)
   upgradesPanelHandle.update(state, settings.numberFormat)
   powerCoreUpgradesPanelHandle.update(state, settings.numberFormat)
   statsPanelHandle.update(state, lastResult, settings.numberFormat)
@@ -140,6 +181,7 @@ function deselectAll(): void {
   if (selected !== null) {
     selected = null
     changed = true
+    tabShellHandle.activateTab('build') // the selected-cell tab is about to hide (see syncCellDetailTab) - don't leave it "active" but invisible
   }
   if (changed) render()
 }
@@ -162,20 +204,21 @@ function handleCellClick(x: number, y: number): void {
     if (alreadySelected) rotateBuffFacing(state, x, y)
     selected = { x, y }
     buildType = null // inspecting a cell exits placement mode - can't have both armed at once
-    tabShellHandle.activateTab('build') // selecting a generator always brings its detail/upgrade view into view
+    tabShellHandle.activateTab('cellDetail') // selecting a generator always brings its own tab into view
   } else if (selected && selected.x === x && selected.y === y) {
     selected = null // click the already-selected cell again to deselect it
+    tabShellHandle.activateTab('build') // the selected-cell tab is about to hide (see syncCellDetailTab) - don't leave it "active" but invisible
   } else {
     selected = { x, y }
     buildType = null // inspecting a cell exits placement mode - can't have both armed at once
-    tabShellHandle.activateTab('build') // selecting a generator always brings its detail/upgrade view into view
+    tabShellHandle.activateTab('cellDetail') // selecting a generator always brings its own tab into view
   }
   render()
 }
 
-function handleUpgrade(): void {
+function handleUpgrade(count: number): void {
   if (!selected) return
-  if (upgradeCell(state, selected.x, selected.y)) {
+  if (upgradeCell(state, selected.x, selected.y, count)) {
     lastResult = recalculate(state)
   }
   render()
@@ -186,6 +229,7 @@ function handleRemove(): void {
   if (removeCell(state, selected.x, selected.y)) {
     lastResult = recalculate(state)
     selected = null // the cell it pointed at is empty now, nothing left to inspect
+    tabShellHandle.activateTab('build') // the selected-cell tab is about to hide (see syncCellDetailTab) - don't leave it "active" but invisible
   }
   render()
 }
@@ -285,6 +329,7 @@ function applyOfflineCatchUp(loaded: GameState): GameState {
 
 const panelHandle = createPanel(
   tabShellHandle.contentContainer('build'),
+  tabShellHandle.contentContainer('cellDetail'),
   (type) => {
     buildType = buildType === type ? null : type // click the active type again to deselect
     selected = null // arming a build type exits inspect mode - can't have both armed at once

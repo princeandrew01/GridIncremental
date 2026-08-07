@@ -1,6 +1,6 @@
 import Decimal from 'break_infinity.js'
 import type { GameState } from './types'
-import { recalculate, expectedCritMultipliers, powerCoreGeneratorPeriod } from './engine'
+import { recalculate, expectedCritMultipliers, powerCoreGeneratorPeriod, powerCoreGeneratorAmount } from './engine'
 import { maxOfflineTicks, OFFLINE_CRIT_VARIANCE } from './config'
 
 /**
@@ -23,13 +23,13 @@ export interface OfflineResult {
 }
 
 /**
- * Closed-form power-core gain over N ticks. Alpha 0.31: each Power Core
- * Generator's own proc count over N ticks is a per-cell floor-division
- * (its own period, based on its own level - `floor((coreProgress+N)/period)
- * - floor(coreProgress/period)`, mutating `coreProgress` for real, same as
- * firePowerCoreGenerators does for a single tick), each proc worth exactly
- * 1 core (see config.ts - the old Power Core Amount upgrade that used to
- * scale this is gone).
+ * Closed-form power-core gain over N ticks. Each Power Core Generator's own
+ * proc count over N ticks is a per-cell floor-division (its own period,
+ * based on its own level - `floor((coreProgress+N)/period) -
+ * floor(coreProgress/period)`, mutating `coreProgress` for real, same as
+ * firePowerCoreGenerators does for a single tick), each proc worth
+ * powerCoreGeneratorAmount(level) cores (period AND amount both scale with
+ * level - see config.ts).
  *
  * Rather than hand-duplicating recalculate()'s leech-stealing + Buff
  * multiplier logic here (a real, error-prone duplication the old Alpha 0.3
@@ -52,7 +52,7 @@ function offlinePowerCoreGain(state: GameState, N: number): Decimal {
     const period = powerCoreGeneratorPeriod(cell.level)
     const cp = cell.coreProgress
     const procs = Math.floor((cp + N) / period) - Math.floor(cp / period)
-    generatorTotals[i] = new Decimal(procs)
+    generatorTotals[i] = new Decimal(procs).times(powerCoreGeneratorAmount(cell.level))
     cell.coreProgress = (cp + N) % period
   }
   return recalculate(state, undefined, generatorTotals).powerCoreProduction

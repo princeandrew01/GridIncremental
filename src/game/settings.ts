@@ -6,15 +6,9 @@ export interface Settings {
   numberFormat: NumberFormatMode
   volume: number // 0-100; inert for now, no audio system yet - persisted for when one exists
   theme: ThemeMode // 'system' follows the OS/browser preference, same as the default look before this setting existed
-  // Whether the Build tab's per-type descriptions show inline (see
-  // ui/panel.ts) - the user found them "super long" once they became
-  // always-visible list rows instead of hover-only tooltips. Defaults to
-  // true (unchanged look for anyone who hasn't touched this) - unchecking
-  // it doesn't remove the text, just moves it back to the hover tooltip.
-  showBuildDescriptions: boolean
 }
 
-export const DEFAULT_SETTINGS: Settings = { numberFormat: 'scientific', volume: 50, theme: 'system', showBuildDescriptions: true }
+export const DEFAULT_SETTINGS: Settings = { numberFormat: 'scientific', volume: 50, theme: 'system' }
 
 // A separate localStorage key from the game save: this is a device
 // preference, not game progress, so it doesn't belong in the save blob and
@@ -38,7 +32,6 @@ export function loadSettings(): Settings {
       numberFormat: parsed.numberFormat ?? DEFAULT_SETTINGS.numberFormat,
       volume: typeof parsed.volume === 'number' ? clampVolume(parsed.volume) : DEFAULT_SETTINGS.volume,
       theme: parsed.theme && VALID_THEMES.includes(parsed.theme) ? parsed.theme : DEFAULT_SETTINGS.theme,
-      showBuildDescriptions: typeof parsed.showBuildDescriptions === 'boolean' ? parsed.showBuildDescriptions : DEFAULT_SETTINGS.showBuildDescriptions,
     }
   } catch {
     return { ...DEFAULT_SETTINGS }

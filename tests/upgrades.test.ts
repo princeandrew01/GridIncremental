@@ -186,7 +186,7 @@ describe('effect accessors', () => {
     expect(generatorValueMultiplier(state)).toBeCloseTo(1 + 3 * GENERATOR_VALUE_PCT_PER_LEVEL, 12)
   })
 
-  it('critChanceFor: global base + the Crit Chance upgrade, plus the Crit Tower bonus only when isCritTower is true', () => {
+  it('critChanceFor: global base + the Crit Chance upgrade, plus the Crit Generator bonus only when isCritTower is true', () => {
     const state = makeGameState(1, 1)
     expect(critChanceFor(state, false)).toBeCloseTo(CRIT_BASE_CHANCE, 12)
     expect(critChanceFor(state, true)).toBeCloseTo(CRIT_BASE_CHANCE + CRIT_TOWER_CHANCE_BONUS, 12)
@@ -197,7 +197,7 @@ describe('effect accessors', () => {
     expect(critChanceFor(state, true)).toBeCloseTo(expected + CRIT_TOWER_CHANCE_BONUS, 12)
   })
 
-  it('critAmountFor: global amount x the Crit Tower multiplier only when isCritTower is true', () => {
+  it('critAmountFor: global amount x the Crit Generator multiplier only when isCritTower is true', () => {
     const state = makeGameState(1, 1)
     expect(critAmountFor(state, false)).toBeCloseTo(CRIT_BASE_AMOUNT, 12)
     expect(critAmountFor(state, true)).toBeCloseTo(CRIT_BASE_AMOUNT * CRIT_TOWER_AMOUNT_MULT, 9)

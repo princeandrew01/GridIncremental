@@ -15,7 +15,7 @@ export const POWER_CORE_UPGRADE_IDS: PowerCoreUpgradeId[] = ['gridSize', 'critTo
 
 export const POWER_CORE_UPGRADE_LABEL: Record<PowerCoreUpgradeId, string> = {
   gridSize: 'Grid Size',
-  critTowerSlots: 'Crit Tower Slots',
+  critTowerSlots: 'Crit Generator Slots',
   basicSteadySlots: 'Basic Steady Slots',
   buffStackerSlots: 'Buff Stacker Slots',
   buffAllSlots: 'Buff All Slots',
@@ -23,7 +23,7 @@ export const POWER_CORE_UPGRADE_LABEL: Record<PowerCoreUpgradeId, string> = {
 
 export const POWER_CORE_UPGRADE_DESCRIPTION: Record<PowerCoreUpgradeId, string> = {
   gridSize: `+${PC_GRID_SIZE_PER_LEVEL} to both grid dimensions, additive with Energy's Grid Size.`,
-  critTowerSlots: 'Each level allows one more Crit Tower (a maxed Basic evolved for +30 percentage points crit chance and x100 crit amount) on the board at once.',
+  critTowerSlots: 'Each level allows one more Crit Generator (a maxed Basic evolved for +30 percentage points crit chance and x100 crit amount) on the board at once.',
   basicSteadySlots: 'Each level allows one more Basic Steady Tower (a maxed Basic evolved for a x10 output multiplier) on the board at once.',
   buffStackerSlots: 'Each level allows one more Buff Stacker (a maxed Buff evolved to multiply another Buff/Buff All it targets) on the board at once.',
   buffAllSlots: 'Each level allows one more Buff All (a maxed Buff evolved to boost every cell on the board) on the board at once.',

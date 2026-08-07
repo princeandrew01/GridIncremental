@@ -62,9 +62,9 @@ export function createStatsPanel(container: HTMLElement): StatsPanelHandle {
     v.ratePerHour.textContent = `${format(result.production.times(3600), formatMode)} / hr`
 
     // "Global" = the account-wide component from upgrades alone, with no
-    // Crit Tower bonus mixed in (isCritTower: false) - a plain Basic or
+    // Crit Generator bonus mixed in (isCritTower: false) - a plain Basic or
     // Basic Steady's own tooltip (see grid.ts) shows exactly this; a Crit
-    // Tower's shows its own boosted figure instead.
+    // Generator's shows its own boosted figure instead.
     v.globalCritChance.textContent = `${(critChanceFor(state, false) * 100).toFixed(1)}%`
     v.globalCritAmount.textContent = `${critAmountFor(state, false).toFixed(2)}x`
 

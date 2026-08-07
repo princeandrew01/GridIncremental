@@ -2,7 +2,13 @@ import type { GameState, TickResult } from '../game/types'
 import { cellIndex } from '../game/types'
 import { format } from '../game/format'
 import type { NumberFormatMode } from '../game/format'
-import { powerCoreGeneratorPeriod, resolveEffectiveBuffMultipliers } from '../game/engine'
+import {
+  powerCoreGeneratorPeriod,
+  powerCoreGeneratorAmount,
+  resolveEffectiveBuffMultipliers,
+  resolveBuffMultipliers,
+  expectedPowerCoreResult,
+} from '../game/engine'
 import { critChanceFor, critAmountFor } from '../game/upgrades'
 
 export interface GridSelection {
@@ -32,7 +38,7 @@ export const TYPE_LABEL: Record<string, string> = {
   buff: 'Buff',
   buffStacker: 'Buff Stacker',
   buffAll: 'Buff All',
-  basicCrit: 'Crit Tower',
+  basicCrit: 'Crit Generator',
   basicSteady: 'Basic Steady Tower',
   powerCoreGenerator: 'Power Core Generator',
 }
@@ -47,6 +53,22 @@ export const TYPE_ABBREV: Record<string, string> = {
   basicCrit: 'Crit',
   basicSteady: 'Steady',
   powerCoreGenerator: 'Core Gen',
+}
+
+// A colour-coded square per type, roughly matching each type's own cell-
+// <type> colour (see style.css) - used as the "selected cell" rail tab's
+// icon (see main.ts), so the tab reads as "this specific tower" at a glance
+// rather than a generic glyph.
+export const TYPE_ICON: Record<string, string> = {
+  empty: '⬜',
+  basic: '🟩',
+  leech: '🟥',
+  buff: '🟨',
+  buffStacker: '🟪',
+  buffAll: '🟫',
+  basicCrit: '🟧',
+  basicSteady: '🟦',
+  powerCoreGenerator: '🔵',
 }
 
 const isBasicFamily = (type: string) => type === 'basic' || type === 'basicCrit' || type === 'basicSteady'
@@ -120,6 +142,22 @@ export function createGrid(
     // board with none.
     const hasBuffType = state.cells.some((c) => isBuffType(c.type))
     const effectiveBuffMult = hasBuffType ? resolveEffectiveBuffMultipliers(state) : null
+    // Expected (stable, not a live roll) power-core figures - only computed
+    // when there's actually a Power Core Generator on the board to steal
+    // from; used below so a Leech's own cell shows what it's expected to
+    // steal in Power Cores too, not just Energy (a real display gap - the
+    // "display" recalculate() calls this file otherwise relies on never
+    // simulate a generator proc, so finalPowerCores was always 0 on those).
+    const hasPowerCoreGenerator = state.cells.some((c) => c.type === 'powerCoreGenerator')
+    const expectedPowerCores = hasPowerCoreGenerator ? expectedPowerCoreResult(state) : null
+    // Per-producer multiplier (what a Buff facing a Basic/Leech/Power Core
+    // Generator actually does to ITS OWN output) - separate from
+    // effectiveBuffMult above, which is only about a buff-type cell's own
+    // value. Needed so the Power Core Generator's on-cell rate reflects a
+    // Buff targeting it instead of always showing the raw unbuffed amount
+    // (a real display gap the user caught - the mechanic itself already
+    // worked, see engine.ts recalculate(), this was purely cosmetic).
+    const producerBuffMult = hasBuffType ? resolveBuffMultipliers(state) : null
 
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
@@ -136,6 +174,13 @@ export function createGrid(
         // user). The floating crit number below still reacts live; only the
         // stable number itself is held steady.
         const value = isBasicFamily(cell.type) || cell.type === 'leech' ? format(displayResult.final[i], formatMode) : ''
+        // A Leech steals Power Cores too, whenever a Power Core Generator is
+        // anywhere in its range - shown as a second line, only when it's
+        // actually expecting to collect any (most Leeches never will).
+        const powerCoreValue =
+          cell.type === 'leech' && expectedPowerCores && expectedPowerCores.finalPowerCores[i].gt(0)
+            ? format(expectedPowerCores.finalPowerCores[i], formatMode)
+            : ''
         const crit = isBasicFamily(cell.type) && result.crits[i]
 
         if (crit && lastFloatTick[i] !== state.tickCount) {
@@ -151,7 +196,16 @@ export function createGrid(
         // changed.
         const critStats = isBasicFamily(cell.type) ? `${state.upgrades.critChance},${state.upgrades.critAmount}` : ''
         const facing = isBuff && (cell.type === 'buff' || cell.type === 'buffStacker') ? cell.facing : ''
-        const buffMultText = isBuff ? (effectiveBuffMult?.get(i)?.toFixed(3) ?? '') : ''
+        // Buff-type cells show their own effective value; a Power Core
+        // Generator's displayed rate depends on the producer-side multiplier
+        // instead (see producerBuffMult above) - either way, this has to be
+        // part of the signature or a buff strength change wouldn't trigger
+        // a re-render for a cell whose own level/coreProgress didn't change.
+        const buffMultText = isBuff
+          ? (effectiveBuffMult?.get(i)?.toFixed(3) ?? '')
+          : cell.type === 'powerCoreGenerator' && producerBuffMult
+            ? producerBuffMult[i].toFixed(3)
+            : ''
 
         // Everything that affects this cell's rendered output, as one
         // comparable string. render() runs on every animation frame
@@ -162,7 +216,7 @@ export function createGrid(
         // the browser drops the click rather than firing it. That's why a
         // freshly-placed cell sometimes took several clicks before it
         // "took" - not a logic bug in the click handler, a DOM-churn race.
-        const signature = `${cell.type}|${cell.level}|${cell.coreProgress}|${facing}|${buffMultText}|${value}|${isSelected}|${canPlaceCurrent}|${critStats}`
+        const signature = `${cell.type}|${cell.level}|${cell.coreProgress}|${facing}|${buffMultText}|${value}|${powerCoreValue}|${isSelected}|${canPlaceCurrent}|${critStats}`
         if (lastSignature[i] === signature) continue
         lastSignature[i] = signature
 
@@ -210,26 +264,51 @@ export function createGrid(
           btn.title = `Buff All — Level ${cell.level}\nBoosting: ${pctText} (every cell on the board)`
         } else if (cell.type === 'powerCoreGenerator') {
           // Production is discrete (a proc every `period` ticks), not a
-          // per-tick trickle like Basic/Leech - shows a ticks-remaining
-          // countdown instead of a per-tick value.
+          // per-tick trickle like Basic/Leech. Shows the steady RATE in
+          // plain English ("3 per 8 ticks" / "10 per tick" at max level)
+          // rather than a live ticks-remaining countdown - players found the
+          // countdown confusing (it doesn't say what it's counting down TO
+          // without hovering). Both period AND amount scale with level now
+          // (the user's own redesign - a maxed generator is both faster and
+          // worth more per proc). The rate only changes when the cell levels
+          // up, so it reads as a stable fact about the cell instead of
+          // something visibly ticking away every second. The countdown
+          // itself moves to the tooltip, for anyone who does want it.
           const period = powerCoreGeneratorPeriod(cell.level)
+          const rawAmount = powerCoreGeneratorAmount(cell.level)
+          const buffMult = producerBuffMult ? producerBuffMult[i] : 1
+          // A Buff facing this generator multiplies its own output, same as
+          // any other producer - show the boosted number, not the raw one,
+          // or a buff aimed at a generator would look like it's doing
+          // nothing on the board itself (it wasn't the mechanic that was
+          // broken, just this display - see engine.ts recalculate()).
+          const amount = buffMult === 1 ? rawAmount : Number((rawAmount * buffMult).toFixed(2))
           const ticksLeft = period - cell.coreProgress
+          const rateText = period === 1 ? `${amount} per tick` : `${amount} per ${period} ticks`
           btn.innerHTML =
-            `<span class="cell-glyph">${TYPE_ABBREV[cell.type]}</span>` + `<span class="cell-value">${ticksLeft}</span>`
+            `<span class="cell-glyph">${TYPE_ABBREV[cell.type]}</span>` + `<span class="cell-value">${rateText}</span>`
           btn.setAttribute(
             'aria-label',
-            `Power Core Generator level ${cell.level}, column ${x + 1}, row ${y + 1}, ${ticksLeft} ticks until next core.`,
+            `Power Core Generator level ${cell.level}, column ${x + 1}, row ${y + 1}, producing ${amount} power core${amount === 1 ? '' : 's'} every ${period} ticks, next in ${ticksLeft}.`,
           )
-          btn.title = `Power Core Generator — Level ${cell.level}\nNext core in ${ticksLeft} / ${period} ticks.`
+          btn.title =
+            `Power Core Generator — Level ${cell.level}\n` +
+            `Rate: ${amount} core${amount === 1 ? '' : 's'}${buffMult !== 1 ? ` (${rawAmount} × ${buffMult.toFixed(3)} Buff)` : ''} / ${period} ticks\n` +
+            `Next core in ${ticksLeft} tick${ticksLeft === 1 ? '' : 's'}.`
         } else {
           // basic, leech, basicCrit, basicSteady - the crit float (see
           // spawnCritFloat above) handles the "just critted" moment; this
-          // just shows the stable expected value every render.
+          // just shows the stable expected value every render. A Leech gets
+          // a second value line for Power Cores whenever it's expecting to
+          // steal any (see powerCoreValue above) - it steals both resources
+          // at once from anything in range, not just Energy.
+          const powerCoreLine = powerCoreValue ? `<span class="cell-value cell-value-power-cores">🔵 ${powerCoreValue}</span>` : ''
           btn.innerHTML =
-            `<span class="cell-glyph">${TYPE_ABBREV[cell.type]}</span>` + `<span class="cell-value">${value}</span>`
+            `<span class="cell-glyph">${TYPE_ABBREV[cell.type]}</span>` + `<span class="cell-value">${value}</span>` + powerCoreLine
           btn.setAttribute(
             'aria-label',
-            `${TYPE_LABEL[cell.type]} level ${cell.level}, column ${x + 1}, row ${y + 1}, value ${value} per tick`,
+            `${TYPE_LABEL[cell.type]} level ${cell.level}, column ${x + 1}, row ${y + 1}, value ${value} per tick` +
+              (powerCoreValue ? `, plus ${powerCoreValue} power cores per tick` : ''),
           )
           if (isBasicFamily(cell.type)) {
             const isCritTower = cell.type === 'basicCrit'
@@ -240,7 +319,8 @@ export function createGrid(
               `Output: ${value} / tick\n` +
               `Crit chance: ${(chance * 100).toFixed(1)}% • Crit amount: ${amount.toFixed(2)}x`
           } else {
-            btn.title = `Leech — Level ${cell.level}\nValue: ${value} / tick`
+            btn.title =
+              `Leech — Level ${cell.level}\nEnergy: ${value} / tick` + (powerCoreValue ? `\nPower Cores: ${powerCoreValue} / tick (expected)` : '')
           }
         }
       }
